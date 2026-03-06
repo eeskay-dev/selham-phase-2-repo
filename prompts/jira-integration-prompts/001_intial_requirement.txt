@@ -1,0 +1,211 @@
+SPEC-KIT + JIRA DEVELOPMENT WORKFLOW
+
+
+1. Product Requirement
+   Product Manager creates the feature specification.
+
+   Location:
+   specs/<feature>/spec.md
+
+
+2. Architecture Planning
+   Architect / Tech Lead runs:
+
+       speckit plan
+
+   Generates:
+
+       spec.md
+       plan.md
+       tasks.md
+
+   Tasks include:
+       - Frontend tasks
+       - Backend tasks
+       - Microservice tasks
+       - Database tasks
+       - Integration tasks
+
+
+3. Generate JIRA Draft
+   Script converts spec tasks into a reviewable JIRA draft.
+
+       python scripts/generate_jira_draft.py
+
+   Output:
+
+       jira/jira-draft.yaml
+
+
+4. Manual Review
+   Architect / Product Manager reviews and updates:
+
+       Epic
+       Stories
+       Task breakdown
+       Acceptance criteria
+       Service ownership
+
+
+5. Push Approved Draft to JIRA
+   After review run:
+
+       python scripts/push_jira.py
+
+   JIRA hierarchy created:
+
+       Epic
+         └ Story
+             └ Tasks
+
+
+6. Mapping File Generated
+   Mapping between spec tasks and JIRA issues stored in:
+
+       jira/jira-map.json
+
+
+7. Business Team Review
+   Business teams review tickets in JIRA.
+
+   They may:
+       - add comments
+       - clarify requirements
+       - attach documents
+       - suggest improvements
+
+
+8. Sync Business Feedback to Specs
+   Script syncs JIRA comments back to specs.
+
+       python scripts/sync_jira_comments.py
+
+   Updates:
+
+       specs/<feature>/tasks.md
+
+
+9. Task Assignment
+   JIRA assigns tasks to developers based on:
+
+       - frontend
+       - backend
+       - specific microservices
+       - infrastructure
+
+
+10. Developer Gets Task
+   Developer receives assigned JIRA ticket.
+
+   Example:
+
+       PROJ-231 Create Product API
+       PROJ-232 Product UI Screen
+       PROJ-233 Inventory Microservice
+
+
+11. Developer Repository Setup
+   Developer works in the relevant service repository.
+
+   Example repos:
+
+       product-service
+       inventory-service
+       web-frontend
+
+
+12. Feature Branch Creation
+   Developer creates branch referencing JIRA ticket.
+
+       feature/PROJ-231-product-api
+
+
+13. Access Spec-Kit References
+   Each repository contains the relevant spec references.
+
+   Example structure:
+
+       /specs
+          spec.md
+          plan.md
+          tasks.md
+
+   Developer can reference:
+       requirements
+       architecture
+       task details
+       discussions
+
+
+14. Implementation using Spec-Kit
+   Developer runs:
+
+       speckit implement PROJ-231
+
+   Spec-Kit uses:
+       spec.md
+       plan.md
+       tasks.md
+
+   Generates initial code structure such as:
+
+       controllers
+       services
+       repositories
+       UI components
+       tests
+
+
+15. Development and Validation
+   Developer updates generated code and runs tests.
+
+   Activities include:
+       implement business logic
+       validate API behavior
+       run unit tests
+       verify integration
+
+
+16. Pull Request
+   Developer creates pull request referencing JIRA ticket.
+
+       feature/PROJ-231-product-api → main
+
+
+17. Code Review
+   Reviewers:
+
+       review code
+       add comments
+       request changes
+       approve
+
+
+18. Merge and Close Ticket
+   After PR merge:
+
+       JIRA ticket status → Done
+
+
+19. Continuous Knowledge Sync
+   Discussions from:
+
+       JIRA comments
+       PR reviews
+       spec updates
+
+   are synced back into:
+
+       spec.md
+       plan.md
+       tasks.md
+
+
+20. Final Outcome
+   Specs become the permanent record of:
+
+       requirements
+       architecture decisions
+       business feedback
+       implementation discussions
+       development history
