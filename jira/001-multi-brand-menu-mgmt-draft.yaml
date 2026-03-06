@@ -1,0 +1,420 @@
+metadata:
+  generated: '2026-03-06T16:27:57.186726'
+  feature: 001-multi-brand-menu-mgmt
+  feature_path: /Users/hubino/Workspace/Pattarai/vengadam/selham-phase-2-repo/specs/001-multi-brand-menu-mgmt
+  generator_version: 1.0.0
+project:
+  key: SPEC
+  name: Spec-Kit Generated Features
+epic:
+  key: SPEC-001
+  summary: Multi-Brand Menu Management System
+  description: 'Multi-Brand Menu Management: The platform shall allow administrators to onboard and manage multiple restaurant
+    brands. For each brand, the platform shall support: Uploading and managing menu items with names, descriptions, prices,
+    images, and nutritional and allergens information (if required). Defining and managing modifiers and customization options
+    (e.g., toppings, sizes, add-ons) with associated prices. Setting item availability (e.g., temporary unavailability, time-based
+    availability). Managing promotional items and discounts. The platform shall ensure clear visual separation and branding
+    for each restaurant''s menu within the user interface. Real-time updates to menus shall be reflected across all deployed
+    platforms (kiosks, web, mobile).
+
+
+    **Success Criteria:**
+
+    - Restaurant administrators can complete brand onboarding and add their first 10 menu items within 30 minutes
+
+    - Menu updates propagate to all platforms (web, mobile, kiosk) within 30 seconds of being saved
+
+    - System supports 100+ concurrent brand administrators managing menus without performance degradation
+
+    - Zero data leakage between brands - 100% data isolation maintained across all operations
+
+    - 95% of menu changes (pricing, availability, descriptions) are successfully synchronized across all platforms without
+    manual intervention
+
+
+
+    **Related Documentation:**
+
+    - Specification: specs/001-multi-brand-menu-mgmt/spec.md
+
+    - Implementation Plan: specs/001-multi-brand-menu-mgmt/plan.md
+
+    - Task Breakdown: specs/001-multi-brand-menu-mgmt/tasks.md
+
+    '
+  issueType: Epic
+  priority: High
+  labels:
+  - speckit-generated
+  - epic
+  - 001-multi-brand-menu-mgmt
+  components:
+  - Platform
+  customFields:
+    businessValue: High
+    targetRelease: TBD
+    estimatedEffort: TBD
+stories:
+- key: SPEC-001-US1
+  summary: Restaurant Brand Onboarding (P1)
+  description: 'As a platform administrator, I want to onboard new restaurant brands onto the platform so that each brand
+    can have their own isolated menu management space with distinct branding and identity.
+
+
+    **Priority Rationale:** Foundation functionality - without brand onboarding, no other menu management features can be
+    utilized. This establishes the core multi-tenant architecture.
+
+
+    **Independent Testing:** Can be fully tested by creating a new brand profile, setting up basic brand information (name,
+    logo, colors), and verifying the brand appears in the admin dashboard with proper isolation from other brands.
+
+
+    **Acceptance Scenarios:**
+
+    - Given I am a platform administrator,, When I create a new restaurant brand with name, logo, and branding colors,, Then
+    the brand is registered in the system with a unique identifier and appears in the brands list
+
+    - Given a new brand has been created,, When I access the brand''s menu management area,, Then I see a clean interface
+    with the brand''s visual identity and no menu items from other brands
+
+    - Given multiple brands exist in the system,, When I switch between brand management interfaces,, Then each brand displays
+    its own distinct branding and isolated data
+
+
+
+    **Definition of Done:**
+
+    - [ ] Contract specifications defined
+
+    - [ ] Implementation complete
+
+    - [ ] Integration tests passing
+
+    - [ ] Documentation updated
+
+    - [ ] Code reviewed and approved
+
+    '
+  issueType: Story
+  priority: Highest
+  labels:
+  - speckit-generated
+  - user-story
+  - p1
+  components:
+  - Platform
+  customFields:
+    storyPoints: 8
+    acceptanceCriteria: 'Given I am a platform administrator,, When I create a new restaurant brand with name, logo, and branding
+      colors,, Then the brand is registered in the system with a unique identifier and appears in the brands list
+
+      Given a new brand has been created,, When I access the brand''s menu management area,, Then I see a clean interface
+      with the brand''s visual identity and no menu items from other brands
+
+      Given multiple brands exist in the system,, When I switch between brand management interfaces,, Then each brand displays
+      its own distinct branding and isolated data'
+- key: SPEC-001-US2
+  summary: Menu Item Management (P2)
+  description: 'As a restaurant brand administrator, I want to create and manage menu items with complete details (name, description,
+    price, images, nutritional info, allergens) so that customers can view comprehensive product information when ordering.
+
+
+    **Priority Rationale:** Core content management - brands need to populate their menus before any customer-facing functionality
+    can be useful.
+
+
+    **Independent Testing:** Can be tested by creating menu items with all required fields, uploading images, and verifying
+    the items appear correctly in the brand''s menu catalog with all information displayed properly.
+
+
+    **Acceptance Scenarios:**
+
+    - Given I am managing a restaurant brand,, When I create a new menu item with name, description, price, and image,, Then
+    the item is saved and appears in the menu catalog
+
+    - Given I am adding a menu item,, When I include nutritional information and allergen warnings,, Then this information
+    is stored and clearly displayed to customers
+
+    - Given I have existing menu items,, When I edit an item''s details or replace its image,, Then the changes are immediately
+    reflected across all platforms
+
+
+
+    **Definition of Done:**
+
+    - [ ] Contract specifications defined
+
+    - [ ] Implementation complete
+
+    - [ ] Integration tests passing
+
+    - [ ] Documentation updated
+
+    - [ ] Code reviewed and approved
+
+    '
+  issueType: Story
+  priority: High
+  labels:
+  - speckit-generated
+  - user-story
+  - p2
+  components:
+  - Platform
+  customFields:
+    storyPoints: 5
+    acceptanceCriteria: 'Given I am managing a restaurant brand,, When I create a new menu item with name, description, price,
+      and image,, Then the item is saved and appears in the menu catalog
+
+      Given I am adding a menu item,, When I include nutritional information and allergen warnings,, Then this information
+      is stored and clearly displayed to customers
+
+      Given I have existing menu items,, When I edit an item''s details or replace its image,, Then the changes are immediately
+      reflected across all platforms'
+- key: SPEC-001-US3
+  summary: Modifier and Customization Management (P2)
+  description: 'As a restaurant brand administrator, I want to define modifiers and customization options (toppings, sizes,
+    add-ons) with their own pricing so that customers can personalize their orders according to available options.
+
+
+    **Priority Rationale:** Essential for flexible ordering - most restaurants need customization options to match their actual
+    service offerings.
+
+
+    **Independent Testing:** Can be tested by creating modifier groups (e.g., "Pizza Sizes", "Burger Toppings"), adding individual
+    modifiers with prices, and verifying customers can select these options during ordering.
+
+
+    **Acceptance Scenarios:**
+
+    - Given I am managing menu items,, When I create modifier groups with individual options and prices,, Then the modifiers
+    are available for selection on applicable menu items
+
+    - Given I have defined modifiers,, When I set minimum/maximum selection rules,, Then the ordering interface enforces these
+    constraints
+
+    - Given customers are ordering,, When they select modifiers,, Then the total price updates correctly to include modifier
+    costs
+
+
+
+    **Definition of Done:**
+
+    - [ ] Contract specifications defined
+
+    - [ ] Implementation complete
+
+    - [ ] Integration tests passing
+
+    - [ ] Documentation updated
+
+    - [ ] Code reviewed and approved
+
+    '
+  issueType: Story
+  priority: High
+  labels:
+  - speckit-generated
+  - user-story
+  - p2
+  components:
+  - Platform
+  customFields:
+    storyPoints: 5
+    acceptanceCriteria: 'Given I am managing menu items,, When I create modifier groups with individual options and prices,,
+      Then the modifiers are available for selection on applicable menu items
+
+      Given I have defined modifiers,, When I set minimum/maximum selection rules,, Then the ordering interface enforces these
+      constraints
+
+      Given customers are ordering,, When they select modifiers,, Then the total price updates correctly to include modifier
+      costs'
+- key: SPEC-001-US4
+  summary: Item Availability Management (P3)
+  description: 'As a restaurant brand administrator, I want to control item availability (temporary unavailability, time-based
+    availability) so that customers only see items that can actually be prepared and served.
+
+
+    **Priority Rationale:** Operational necessity - prevents customer frustration and order cancellations due to unavailable
+    items.
+
+
+    **Independent Testing:** Can be tested by setting items as temporarily unavailable, configuring time-based availability
+    rules, and verifying items appear/disappear from customer interfaces according to these settings.
+
+
+    **Acceptance Scenarios:**
+
+    - Given I need to temporarily disable an item,, When I mark it as unavailable,, Then it is immediately hidden from all
+    customer-facing platforms
+
+    - Given I have items with limited serving hours,, When I set time-based availability rules,, Then items automatically
+    appear/disappear at the specified times
+
+    - Given an item becomes available again,, When I re-enable it,, Then it immediately appears on all platforms with current
+    pricing and details
+
+
+
+    **Definition of Done:**
+
+    - [ ] Contract specifications defined
+
+    - [ ] Implementation complete
+
+    - [ ] Integration tests passing
+
+    - [ ] Documentation updated
+
+    - [ ] Code reviewed and approved
+
+    '
+  issueType: Story
+  priority: Medium
+  labels:
+  - speckit-generated
+  - user-story
+  - p3
+  components:
+  - Platform
+  customFields:
+    storyPoints: 3
+    acceptanceCriteria: 'Given I need to temporarily disable an item,, When I mark it as unavailable,, Then it is immediately
+      hidden from all customer-facing platforms
+
+      Given I have items with limited serving hours,, When I set time-based availability rules,, Then items automatically
+      appear/disappear at the specified times
+
+      Given an item becomes available again,, When I re-enable it,, Then it immediately appears on all platforms with current
+      pricing and details'
+- key: SPEC-001-US5
+  summary: Promotional Management (P3)
+  description: 'As a restaurant brand administrator, I want to create and manage promotional items and discounts so that I
+    can run marketing campaigns and special offers to attract customers.
+
+
+    **Priority Rationale:** Business growth tool - while not essential for basic operations, promotions are crucial for competitive
+    positioning and revenue optimization.
+
+
+    **Independent Testing:** Can be tested by creating promotional pricing for items, setting discount rules, and verifying
+    promotional prices display correctly and are applied during checkout.
+
+
+    **Acceptance Scenarios:**
+
+    - Given I want to run a promotion,, When I set discounted pricing for items with start/end dates,, Then the promotional
+    prices display during the specified period
+
+    - Given I create percentage or fixed-amount discounts,, When customers add promoted items to their cart,, Then the discount
+    is properly calculated and applied
+
+    - Given a promotion expires,, When the end date is reached,, Then items automatically revert to regular pricing across
+    all platforms
+
+
+
+    **Definition of Done:**
+
+    - [ ] Contract specifications defined
+
+    - [ ] Implementation complete
+
+    - [ ] Integration tests passing
+
+    - [ ] Documentation updated
+
+    - [ ] Code reviewed and approved
+
+    '
+  issueType: Story
+  priority: Medium
+  labels:
+  - speckit-generated
+  - user-story
+  - p3
+  components:
+  - Platform
+  customFields:
+    storyPoints: 3
+    acceptanceCriteria: 'Given I want to run a promotion,, When I set discounted pricing for items with start/end dates,,
+      Then the promotional prices display during the specified period
+
+      Given I create percentage or fixed-amount discounts,, When customers add promoted items to their cart,, Then the discount
+      is properly calculated and applied
+
+      Given a promotion expires,, When the end date is reached,, Then items automatically revert to regular pricing across
+      all platforms'
+- key: SPEC-001-US6
+  summary: Real-time Multi-Platform Synchronization (P1)
+  description: 'As a restaurant brand administrator, I want menu changes to be immediately reflected across all deployed platforms
+    (kiosks, web, mobile) so that customers always see current information regardless of how they access the menu.
+
+
+    **Priority Rationale:** Critical for consistency - prevents order errors and customer confusion due to outdated information
+    on any platform.
+
+
+    **Independent Testing:** Can be tested by making menu changes in the admin interface and verifying updates appear immediately
+    on web, mobile, and kiosk interfaces within seconds.
+
+
+    **Acceptance Scenarios:**
+
+    - Given I update menu item information,, When I save the changes,, Then all platforms (web, mobile, kiosk) reflect the
+    updates within 30 seconds
+
+    - Given I change item availability,, When I disable an item,, Then it disappears from all customer interfaces simultaneously
+
+    - Given I update pricing,, When I save new prices,, Then all platforms show the updated pricing immediately without requiring
+    restarts or manual updates
+
+
+
+    **Definition of Done:**
+
+    - [ ] Contract specifications defined
+
+    - [ ] Implementation complete
+
+    - [ ] Integration tests passing
+
+    - [ ] Documentation updated
+
+    - [ ] Code reviewed and approved
+
+    '
+  issueType: Story
+  priority: Highest
+  labels:
+  - speckit-generated
+  - user-story
+  - p1
+  components:
+  - Platform
+  customFields:
+    storyPoints: 8
+    acceptanceCriteria: 'Given I update menu item information,, When I save the changes,, Then all platforms (web, mobile,
+      kiosk) reflect the updates within 30 seconds
+
+      Given I change item availability,, When I disable an item,, Then it disappears from all customer interfaces simultaneously
+
+      Given I update pricing,, When I save new prices,, Then all platforms show the updated pricing immediately without requiring
+      restarts or manual updates'
+tasks: []
+workflow:
+  statusMapping:
+    To Do:
+      speckit: not-started
+    In Planning:
+      speckit: design-phase
+    In Progress:
+      speckit: implementation
+    Code Review:
+      speckit: review-phase
+    Testing:
+      speckit: integration-testing
+    Done:
+      speckit: completed
+    Blocked:
+      speckit: blocked

@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "generated": "2026-03-06T19:47:14.692696",
+    "feature": "001-multi-brand-menu-mgmt",
+    "draft_file": "/Users/hubino/Workspace/Pattarai/vengadam/selham-phase-2-repo/jira/001-multi-brand-menu-mgmt-draft.yaml",
+    "jira_url": "",
+    "jira_project": null
+  },
+  "mapping": {
+    "SPEC-001": "DRY-SPEC-001",
+    "SPEC-001-US1": "DRY-SPEC-001-US1",
+    "SPEC-001-US2": "DRY-SPEC-001-US2",
+    "SPEC-001-US3": "DRY-SPEC-001-US3",
+    "SPEC-001-US4": "DRY-SPEC-001-US4",
+    "SPEC-001-US5": "DRY-SPEC-001-US5",
+    "SPEC-001-US6": "DRY-SPEC-001-US6"
+  },
+  "created_issues": {
+    "epic": "DRY-SPEC-001",
+    "stories": [
+      "DRY-SPEC-001-US1",
+      "DRY-SPEC-001-US2",
+      "DRY-SPEC-001-US3",
+      "DRY-SPEC-001-US4",
+      "DRY-SPEC-001-US5",
+      "DRY-SPEC-001-US6"
+    ],
+    "tasks": [],
+    "total": 7
+  }
+}
