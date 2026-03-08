@@ -254,7 +254,22 @@ jobs:
             echo "✅ Successfully pushed to JIRA"
           else
             echo "jira_push_success=false" >> $GITHUB_OUTPUT
-            echo "❌ JIRA push failed"
+            
+            # Check for specific error types and provide guidance
+            if grep -q "401.*Unauthorized" push_output.log; then
+              echo "❌ JIRA Authentication Failed (401 Unauthorized)"
+              echo "🔍 Check GitHub repository secrets: JIRA_EMAIL and JIRA_TOKEN"
+              echo "📖 See troubleshooting: troubleshooting/speckit-jira-integeration/002_github-action-failure.md"
+            elif grep -q "403.*Forbidden" push_output.log; then
+              echo "❌ JIRA Permission Denied (403 Forbidden)"
+              echo "🔍 User lacks necessary JIRA permissions for this project"
+            elif grep -q "404.*Not Found" push_output.log; then
+              echo "❌ JIRA Resource Not Found (404)"
+              echo "🔍 Check JIRA_PROJECT key and JIRA_URL"
+            else
+              echo "❌ JIRA push failed - check logs for details"
+            fi
+            
             exit 1
           fi
 
@@ -313,11 +328,26 @@ jobs:
             - Triggered by PR merge: #${{ github.event.pull_request.number }}
             - Failed during JIRA push process
             
+            **Common Issues & Solutions:**
+            
+            🔐 **Authentication (401 Unauthorized)**
+            - Verify GitHub secrets: \`JIRA_EMAIL\` and \`JIRA_TOKEN\`
+            - Ensure JIRA_TOKEN is an API token (not password)
+            - Check token hasn't expired
+            
+            🚫 **Permission Denied (403 Forbidden)**  
+            - Contact JIRA admin for project access
+            - Verify user has "Create Issues" permission
+            
+            🔍 **Resource Not Found (404)**
+            - Check \`JIRA_PROJECT\` key is correct
+            - Verify \`JIRA_URL\` is accessible
+            
             **Action Required:**
-            1. Check workflow logs for detailed error messages
-            2. Verify JIRA configuration and permissions
-            3. Manually run: \`python3 scripts/push_jira.py jira/${featureName}-draft.yaml --dry-run\`
-            4. Fix issues and re-run workflow
+            1. Check workflow logs for specific error details
+            2. See troubleshooting guide: \`troubleshooting/speckit-jira-integeration/002_github-action-failure.md\`
+            3. Test manually: \`python3 scripts/push_jira.py jira/${featureName}-draft.yaml --dry-run\`
+            4. Fix configuration and re-run workflow
             
             **Labels:** jira-integration, automation-failure`;
             
