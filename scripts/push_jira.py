@@ -22,6 +22,7 @@ import yaml
 import json
 import requests
 import argparse
+import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
@@ -143,6 +144,182 @@ class JiraPusher:
         
         return draft
     
+    def _clean_markdown_formatting(self, content: str) -> str:
+        """Clean markdown formatting for JIRA compatibility"""
+        if not content:
+            return content
+        
+        # Remove markdown bold/italic asterisks
+        content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)  # **bold** -> bold
+        content = re.sub(r'\*([^*]+)\*', r'\1', content)      # *italic* -> italic
+        
+        # Clean up any remaining asterisks at start of lines (priority rationale, etc.)
+        lines = content.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            stripped_line = line.strip()
+            if stripped_line.startswith('*') and not stripped_line.startswith('**'):
+                # Remove leading asterisk and space
+                cleaned_line = stripped_line.lstrip('* ').strip()
+                # Preserve indentation
+                indent = len(line) - len(line.lstrip())
+                cleaned_lines.append(' ' * indent + cleaned_line)
+            else:
+                cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines)
+    
+    def _extract_acceptance_scenarios(self, description: str) -> str:
+        """Extract acceptance scenarios from story description"""
+        if not description:
+            return ""
+        
+        # Look for Acceptance Scenarios section
+        lines = description.split('\n')
+        scenarios_section = []
+        in_scenarios = False
+        
+        for line in lines:
+            line_stripped = line.strip()
+            if 'acceptance scenarios' in line_stripped.lower():
+                in_scenarios = True
+                scenarios_section.append("ACCEPTANCE SCENARIOS:")
+                continue
+            elif in_scenarios:
+                # Stop at next section or definition of done
+                if (line_stripped.startswith('**') and 
+                    ('definition of done' in line_stripped.lower() or 
+                     'related' in line_stripped.lower() or
+                     'priority' in line_stripped.lower())):
+                    break
+                elif line_stripped:  # Skip empty lines but capture scenarios
+                    # Clean up Given/When/Then formatting
+                    cleaned_line = self._clean_markdown_formatting(line)
+                    # Replace double commas with proper formatting
+                    cleaned_line = cleaned_line.replace(',,', '\n  ')
+                    scenarios_section.append(cleaned_line)
+        
+        return '\n'.join(scenarios_section) if scenarios_section else ""
+    
+    def get_jira_fields(self) -> Dict[str, str]:
+        """Get JIRA field information including custom fields"""
+        if self.dry_run:
+            return {}
+        
+        try:
+            # Get basic field information
+            response = self.session.get(f"{self.jira_url}/rest/api/2/field")
+            response.raise_for_status()
+            fields = response.json()
+            
+            field_map = {}
+            
+            print(f"\n🔍 Analyzing {len(fields)} JIRA fields...")
+            
+            # Check for parent field (epic linking in this JIRA instance)
+            for field in fields:
+                if field.get('id') == 'parent':
+                    field_map['epicLink'] = 'parent'
+                    print(f"   🎯 Found parent field for epic linking: parent")
+                    break
+            
+            # Get project-specific create metadata to understand custom fields
+            try:
+                create_meta_response = self.session.get(f"{self.jira_url}/rest/api/2/issue/createmeta", params={
+                    'projectKeys': self.jira_project,
+                    'expand': 'projects.issuetypes.fields'
+                })
+                create_meta_response.raise_for_status()
+                create_meta = create_meta_response.json()
+                
+                if create_meta.get('projects'):
+                    project = create_meta['projects'][0]
+                    
+                    # Look through each issue type for useful custom fields
+                    for issue_type in project.get('issuetypes', []):
+                        issue_fields = issue_type.get('fields', {})
+                        
+                        for field_id, field_info in issue_fields.items():
+                            field_name = field_info.get('name', '').lower()
+                            
+                            # Map custom fields we're interested in
+                            if field_id.startswith('customfield_'):
+                                if 'story points' in field_name or 'story point' in field_name:
+                                    field_map['storyPoints'] = field_id
+                                    print(f"   ✅ Found Story Points field: {field_id} ({field_info.get('name')})")
+                                elif 'acceptance criteria' in field_name or 'acceptance' in field_name:
+                                    field_map['acceptanceCriteria'] = field_id
+                                    print(f"   ✅ Found Acceptance Criteria field: {field_id} ({field_info.get('name')})")
+                                elif 'goals' in field_name:
+                                    field_map['goals'] = field_id
+                                elif 'start date' in field_name:
+                                    field_map['startDate'] = field_id
+                                elif 'team' in field_name:
+                                    field_map['team'] = field_id
+            
+            except Exception as e:
+                print(f"   ⚠️  Could not fetch create metadata: {e}")
+            
+            if field_map:
+                print(f"🔍 Discovered JIRA fields: {field_map}")
+            else:
+                print(f"⚠️  No standard fields mapped - using JIRA instance defaults")
+            
+            return field_map
+        except Exception as e:
+            print(f"⚠️  Could not fetch field information: {e}")
+            return {}
+
+    def get_available_issue_types(self) -> Dict[str, str]:
+        """Get available issue types for the project"""
+        if self.dry_run:
+            return {"Epic": "Epic", "Story": "Story", "Task": "Task", "Bug": "Bug"}
+        
+        try:
+            response = self.session.get(f"{self.jira_url}/rest/api/2/project/{self.jira_project}")
+            response.raise_for_status()
+            project_info = response.json()
+            
+            issue_types = {}
+            for issue_type in project_info.get('issueTypes', []):
+                issue_types[issue_type['name']] = issue_type['name']
+            
+            print(f"📋 Available issue types: {list(issue_types.keys())}")
+            return issue_types
+        except Exception as e:
+            print(f"⚠️  Could not fetch issue types: {e}")
+            return {"Epic": "Epic", "Story": "Story", "Task": "Task"}
+    
+    def map_issue_type(self, requested_type: str, available_types: Dict[str, str]) -> str:
+        """Map requested issue type to available type"""
+        # Direct match
+        if requested_type in available_types:
+            return requested_type
+        
+        # Common mappings for different JIRA configurations
+        type_mappings = {
+            'Story': ['Story', 'User Story', 'Feature', 'Task'],
+            'Epic': ['Epic', 'Initiative'],
+            'Task': ['Task', 'Sub-task', 'Story'],
+            'Bug': ['Bug', 'Defect', 'Issue']
+        }
+        
+        for candidate in type_mappings.get(requested_type, [requested_type]):
+            if candidate in available_types:
+                if candidate != requested_type:
+                    print(f"   🔄 Mapping '{requested_type}' → '{candidate}'")
+                return candidate
+        
+        # Default to Task if nothing else works
+        if 'Task' in available_types:
+            print(f"   🔄 Fallback: '{requested_type}' → 'Task'")
+            return 'Task'
+        
+        # Use first available type as last resort
+        fallback = list(available_types.keys())[0]
+        print(f"   🔄 Last resort: '{requested_type}' → '{fallback}'")
+        return fallback
+
     def validate_jira_connection(self) -> bool:
         """Validate JIRA connection and permissions"""
         if self.dry_run:
@@ -211,39 +388,44 @@ class JiraPusher:
             print(f"   3. Check firewall/proxy settings")
             return False
     
-    def create_epic(self, epic_data: Dict[str, Any]) -> Optional[str]:
+    def create_epic(self, epic_data: Dict[str, Any], field_map: Dict[str, str]) -> Optional[str]:
         """Create JIRA epic and return issue key"""
         print(f"\n📋 Creating Epic: {epic_data['summary']}")
         
-        # Build JIRA issue payload with GitHub context
-        description_with_github = epic_data['description'] + self._build_github_section(self.feature_name)
+        # Clean markdown formatting and build description with GitHub context
+        clean_description = self._clean_markdown_formatting(epic_data['description'])
+        description_with_github = clean_description + self._build_github_section(self.feature_name)
+        
+        # Use simple string description instead of ADF for compatibility
         issue_payload = {
             "fields": {
                 "project": {"key": self.jira_project},
                 "summary": epic_data['summary'],
-                "description": self._format_adf_description(description_with_github),
+                "description": description_with_github,  # Use plain text instead of ADF
                 "issuetype": {"name": epic_data['issueType']},
                 "priority": {"name": epic_data['priority']},
                 "labels": epic_data.get('labels', []),
             }
         }
         
-        # Add epic name for Epic issue type
-        if epic_data['issueType'] == 'Epic':
-            issue_payload["fields"]["customfield_10011"] = epic_data['summary']  # Epic Name field
+        # Add epic name if field is available
+        if epic_data['issueType'] == 'Epic' and 'epicName' in field_map:
+            issue_payload["fields"][field_map['epicName']] = epic_data['summary']
+            print(f"   📝 Adding Epic Name field: {field_map['epicName']}")
         
-        # Add custom fields if present
+        # Add custom fields if available
         custom_fields = epic_data.get('customFields', {})
-        for field_name, field_value in custom_fields.items():
-            # Map custom field names to JIRA field IDs (these may need adjustment)
-            field_mapping = {
-                'businessValue': 'customfield_10020',
-                'targetRelease': 'customfield_10021', 
-                'estimatedEffort': 'customfield_10022'
-            }
+        if custom_fields:
+            added_fields = []
+            for field_name, field_value in custom_fields.items():
+                if field_name in field_map:
+                    issue_payload["fields"][field_map[field_name]] = field_value
+                    added_fields.append(f"{field_name}→{field_map[field_name]}")
             
-            if field_name in field_mapping:
-                issue_payload["fields"][field_mapping[field_name]] = field_value
+            if added_fields:
+                print(f"   📋 Adding custom fields: {', '.join(added_fields)}")
+            else:
+                print(f"   ⚠️  Custom fields available but not mapped: {list(custom_fields.keys())}")
         
         if self.dry_run:
             print(f"🔧 DRY RUN: Would create epic with payload:")
@@ -313,7 +495,7 @@ class JiraPusher:
         
         return github_section
     
-    def create_stories(self, stories_data: List[Dict[str, Any]], epic_key: str) -> List[str]:
+    def create_stories(self, stories_data: List[Dict[str, Any]], epic_key: str, field_map: Dict[str, str]) -> List[str]:
         """Create JIRA stories under epic and return issue keys"""
         print(f"\n📝 Creating {len(stories_data)} Stories under Epic {epic_key}")
         
@@ -322,33 +504,60 @@ class JiraPusher:
         for i, story_data in enumerate(stories_data, 1):
             print(f"   [{i}/{len(stories_data)}] {story_data['summary']}")
             
-            # Build JIRA issue payload with GitHub context  
-            story_description_with_github = story_data['description'] + self._build_github_section(self.feature_name)
+            # Clean markdown formatting and build description with GitHub context  
+            clean_description = self._clean_markdown_formatting(story_data['description'])
+            
+            # Extract and format acceptance scenarios prominently
+            acceptance_scenarios = self._extract_acceptance_scenarios(story_data['description'])
+            if not acceptance_scenarios and story_data.get('customFields', {}).get('acceptanceCriteria'):
+                # Fallback to custom field if not found in description
+                raw_criteria = story_data['customFields']['acceptanceCriteria']
+                acceptance_scenarios = "ACCEPTANCE SCENARIOS:\n" + raw_criteria.replace(',,', '\n  ')
+            
+            # Build enhanced description with acceptance scenarios prominently displayed
+            enhanced_description = clean_description
+            if acceptance_scenarios:
+                # Add acceptance scenarios at the end, clearly separated
+                enhanced_description += f"\n\n{'-'*50}\n{acceptance_scenarios}\n{'-'*50}"
+            
+            story_description_with_github = enhanced_description + self._build_github_section(self.feature_name)
             issue_payload = {
                 "fields": {
                     "project": {"key": self.jira_project},
                     "summary": story_data['summary'],
-                    "description": self._format_adf_description(story_description_with_github),
+                    "description": story_description_with_github,  # Use plain text
                     "issuetype": {"name": story_data['issueType']},
                     "priority": {"name": story_data['priority']},
                     "labels": story_data.get('labels', []),
                 }
             }
             
-            # Link to epic
-            if epic_key and not self.dry_run:
-                issue_payload["fields"]["customfield_10014"] = epic_key  # Epic Link field
+            # Link to epic using discovered field - FIX: Use just the key string, not object
+            if epic_key and not self.dry_run and 'epicLink' in field_map:
+                if field_map['epicLink'] == 'parent':
+                    # For parent field, use object with key
+                    issue_payload["fields"][field_map['epicLink']] = {"key": epic_key}
+                    print(f"      🔗 Linking to epic {epic_key} via parent field")
+                else:
+                    # For other epic link fields, use just the key string
+                    issue_payload["fields"][field_map['epicLink']] = epic_key
+                    print(f"      🔗 Linking to epic {epic_key} via {field_map['epicLink']}")
+            elif epic_key and not self.dry_run:
+                print(f"      ⚠️  Epic link field not found - stories won't be linked to epic")
             
-            # Add custom fields
+            # Add custom fields if available
             custom_fields = story_data.get('customFields', {})
-            for field_name, field_value in custom_fields.items():
-                field_mapping = {
-                    'storyPoints': 'customfield_10016',
-                    'acceptanceCriteria': 'customfield_10017'
-                }
+            if custom_fields:
+                added_fields = []
+                for field_name, field_value in custom_fields.items():
+                    if field_name in field_map:
+                        issue_payload["fields"][field_map[field_name]] = field_value
+                        added_fields.append(f"{field_name}→{field_map[field_name]}")
                 
-                if field_name in field_mapping:
-                    issue_payload["fields"][field_mapping[field_name]] = field_value
+                if added_fields:
+                    print(f"      📋 Adding custom fields: {', '.join(added_fields)}")
+                else:
+                    print(f"      ⚠️  Custom fields available but not mapped: {list(custom_fields.keys())}")
             
             if self.dry_run:
                 story_key = f"DRY-{story_data['key']}"
@@ -404,7 +613,7 @@ class JiraPusher:
                 "fields": {
                     "project": {"key": self.jira_project},
                     "summary": task_data['summary'],
-                    "description": self._format_adf_description(task_description_with_github),
+                    "description": task_description_with_github,  # Use plain text
                     "issuetype": {"name": task_data['issueType']},
                     "priority": {"name": task_data['priority']},
                     "labels": task_data.get('labels', []),
@@ -415,18 +624,10 @@ class JiraPusher:
             if parent_story_key and not self.dry_run:
                 issue_payload["fields"]["parent"] = {"key": parent_story_key}
             
-            # Add custom fields
+            # Skip custom fields for now to avoid JIRA configuration issues
             custom_fields = task_data.get('customFields', {})
-            for field_name, field_value in custom_fields.items():
-                field_mapping = {
-                    'taskPhase': 'customfield_10023',
-                    'estimatedHours': 'customfield_10024',
-                    'technicalComplexity': 'customfield_10025',
-                    'parallelExecution': 'customfield_10026'
-                }
-                
-                if field_name in field_mapping:
-                    issue_payload["fields"][field_mapping[field_name]] = field_value
+            if custom_fields and not self.dry_run:
+                print(f"      ⚠️  Skipping task custom fields: {list(custom_fields.keys())}")
             
             if self.dry_run:
                 task_key = f"DRY-{task_data['key']}"
@@ -541,25 +742,42 @@ class JiraPusher:
             if not self.validate_jira_connection():
                 return False
             
+            # Get available issue types and fields
+            available_issue_types = self.get_available_issue_types()
+            field_map = self.get_jira_fields()
+            
             feature_name = draft['metadata']['feature']
             
             print(f"\n🚀 Pushing {feature_name} to JIRA...")
             if self.dry_run:
                 print(f"🔧 DRY RUN MODE: No actual JIRA issues will be created")
             
-            # Create Epic
-            epic_key = self.create_epic(draft['epic'])
+            # Create Epic with proper issue type mapping
+            epic_data = draft['epic'].copy()
+            epic_data['issueType'] = self.map_issue_type(epic_data['issueType'], available_issue_types)
+            epic_key = self.create_epic(epic_data, field_map)
             if not epic_key:
                 print(f"❌ Failed to create epic, aborting")
                 return False
             
-            # Create Stories
-            story_keys = self.create_stories(draft['stories'], epic_key)
+            # Create Stories with proper issue type mapping
+            stories_data = []
+            for story in draft['stories']:
+                story_copy = story.copy()
+                story_copy['issueType'] = self.map_issue_type(story_copy['issueType'], available_issue_types)
+                stories_data.append(story_copy)
             
-            # Create Tasks (if any)
+            story_keys = self.create_stories(stories_data, epic_key, field_map)
+            
+            # Create Tasks (if any) with proper issue type mapping
             task_keys = []
             if 'tasks' in draft and draft['tasks']:
-                task_keys = self.create_tasks(draft['tasks'], self.created_issues['stories'])
+                tasks_data = []
+                for task in draft['tasks']:
+                    task_copy = task.copy()
+                    task_copy['issueType'] = self.map_issue_type(task_copy['issueType'], available_issue_types)
+                    tasks_data.append(task_copy)
+                task_keys = self.create_tasks(tasks_data, self.created_issues['stories'])
             
             # Save mapping file
             mapping_file = self.save_mapping_file(feature_name)
