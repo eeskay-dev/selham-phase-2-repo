@@ -89,7 +89,16 @@ class JiraPusher:
             print(f"✅ JIRA Configuration:")
             print(f"   URL: {self.jira_url}")
             print(f"   Project: {self.jira_project}")
-            print(f"   Email: {self.jira_email}")
+            print(f"   Email: {self._mask_credential(self.jira_email)}")
+            print(f"   Token: {self._mask_credential(self.jira_token)}")
+        
+    def _mask_credential(self, credential: str) -> str:
+        """Mask sensitive credentials for safe display"""
+        if not credential:
+            return "***MISSING***"
+        if len(credential) <= 8:
+            return "***"
+        return f"{credential[:3]}***{credential[-3:]}"
         
     def _resolve_draft_file(self, draft_file: Optional[str]) -> Path:
         """Resolve draft file path from argument or auto-detect"""
@@ -140,21 +149,54 @@ class JiraPusher:
             print("🔧 DRY RUN: Skipping JIRA connection validation")
             return True
             
+        print("🔍 Testing JIRA authentication...")
+        
         try:
             # Test connection with myself endpoint
             response = self.session.get(f"{self.jira_url}/rest/api/2/myself")
+            
+            if response.status_code == 401:
+                print(f"❌ JIRA Authentication Failed (401 Unauthorized)")
+                print(f"🔍 Troubleshooting steps:")
+                print(f"   1. Verify JIRA_EMAIL is correct: {self._mask_credential(self.jira_email)}")
+                print(f"   2. Check JIRA_TOKEN is valid API token (not password)")
+                print(f"   3. Ensure API token has not expired")
+                print(f"   4. Verify JIRA URL is correct: {self.jira_url}")
+                print(f"   5. Test manually: curl -u '{self.jira_email}:TOKEN' {self.jira_url}/rest/api/2/myself")
+                return False
+            elif response.status_code == 403:
+                print(f"❌ JIRA Permission Denied (403 Forbidden)")
+                print(f"🔍 The credentials are valid but lack necessary permissions")
+                print(f"   Contact JIRA admin to grant API access")
+                return False
+                
             response.raise_for_status()
             
             user_info = response.json()
             print(f"✅ JIRA connection validated")
             print(f"   User: {user_info.get('displayName', 'Unknown')}")
+            print(f"   Account ID: {user_info.get('accountId', 'Unknown')}")
             
             # Validate project exists
+            print(f"🔍 Testing project access...")
             response = self.session.get(f"{self.jira_url}/rest/api/2/project/{self.jira_project}")
+            
+            if response.status_code == 404:
+                print(f"❌ JIRA Project Not Found (404)")
+                print(f"🔍 Project '{self.jira_project}' does not exist or is not accessible")
+                print(f"   Check project key and permissions")
+                return False
+            elif response.status_code == 403:
+                print(f"❌ JIRA Project Access Denied (403)")
+                print(f"🔍 User lacks permission to access project '{self.jira_project}'")
+                print(f"   Contact JIRA admin to grant project access")
+                return False
+                
             response.raise_for_status()
             
             project_info = response.json()
             print(f"✅ Project access validated: {project_info.get('name', self.jira_project)}")
+            print(f"   Project Key: {project_info.get('key', 'Unknown')}")
             
             return True
             
@@ -163,6 +205,10 @@ class JiraPusher:
             if hasattr(e, 'response') and e.response is not None:
                 print(f"   Status: {e.response.status_code}")
                 print(f"   Response: {e.response.text}")
+            print(f"🔍 Network troubleshooting:")
+            print(f"   1. Check internet connectivity")
+            print(f"   2. Verify JIRA URL is reachable: {self.jira_url}")
+            print(f"   3. Check firewall/proxy settings")
             return False
     
     def create_epic(self, epic_data: Dict[str, Any]) -> Optional[str]:
