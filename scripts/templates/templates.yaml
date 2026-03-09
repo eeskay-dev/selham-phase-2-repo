@@ -1,0 +1,98 @@
+# JIRA Sync Templates - All issue types in one file
+templates:
+  epic:
+    issue_type: "Epic"
+    summary: "{SUMMARY}"
+    description:
+      source_file: "{SOURCE_FILE}"
+      github_link: "{GITHUB_LINK}"
+      content: |
+        {CONTENT}
+    labels:
+      - "epic"
+      - "spec-sync"
+    components: []
+    priority: "Medium"
+    custom_fields:
+      epic_name: "{EPIC_NAME}"
+      epic_description: "{EPIC_DESCRIPTION}"
+
+  story:
+    issue_type: "Story"
+    summary: "{SUMMARY}"
+    description:
+      source_file: "{SOURCE_FILE}"
+      github_link: "{GITHUB_LINK}"
+      content: |
+        {CONTENT}
+    parent: "{PARENT_KEY}"
+    labels:
+      - "story"
+      - "spec-sync"
+    components: []
+    priority: "Medium"
+    story_points: null
+    acceptance_criteria: |
+      {ACCEPTANCE_CRITERIA}
+
+  task:
+    issue_type: "Task"  
+    summary: "{SUMMARY}"
+    description:
+      source_file: "{SOURCE_FILE}"
+      github_link: "{GITHUB_LINK}"
+      content: |
+        {CONTENT}
+    parent: "{PARENT_KEY}"
+    labels:
+      - "task"
+      - "spec-sync"
+    components: []
+    priority: "Medium"
+    time_estimate: "{TIME_ESTIMATE}"
+    assignee: null
+
+  subtask:
+    issue_type: "Sub-task"
+    summary: "{SUMMARY}"
+    description:
+      source_file: "{SOURCE_FILE}"
+      github_link: "{GITHUB_LINK}"
+      content: |
+        {CONTENT}
+    parent: "{PARENT_KEY}"
+    labels:
+      - "subtask"
+      - "spec-sync"
+    components: []
+    priority: "Low"
+    time_estimate: "{TIME_ESTIMATE}"
+    assignee: null
+    category: "{CATEGORY}"
+
+  bug:
+    issue_type: "Bug"
+    summary: "{SUMMARY}"
+    description:
+      source_file: "{SOURCE_FILE}"
+      github_link: "{GITHUB_LINK}"
+      content: |
+        {CONTENT}
+    parent: "{PARENT_KEY}"
+    labels:
+      - "bug"
+      - "spec-sync"
+    components: []
+    priority: "High"
+    severity: "{SEVERITY}"
+    environment: "{ENVIRONMENT}"
+    steps_to_reproduce: |
+      {STEPS_TO_REPRODUCE}
+    expected_behavior: |
+      {EXPECTED_BEHAVIOR}
+    actual_behavior: |
+      {ACTUAL_BEHAVIOR}
+    assignee: null
+    reporter: null
+    affects_version: null
+    fix_version: null

@@ -1,392 +1,61 @@
-name: Auto-Push Specs to JIRA
+name: Sync Specs to JIRA
 
 on:
+  push:
+    branches: [main, develop]
+    paths: ['specs/**/*.md']
   pull_request:
-    types: [closed]
     branches: [main]
-    paths:
-      - 'specs/*/spec.md'
-      - 'specs/*/tasks.md'
-      - 'jira/*-draft.yaml'
-
-  workflow_dispatch:
-    inputs:
-      feature_path:
-        description: 'Specific feature path to process (e.g., specs/001-multi-brand-menu-mgmt/)'
-        required: false
-        type: string
-      dry_run:
-        description: 'Run in dry-run mode (no actual JIRA issues created)'
-        required: false
-        default: false
-        type: boolean
-
-env:
-  JIRA_URL: ${{ secrets.JIRA_URL }}
-  JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
-  JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-  JIRA_PROJECT: ${{ secrets.JIRA_PROJECT }}
+    paths: ['specs/**/*.md']
+  workflow_dispatch:  # Allow manual trigger
 
 jobs:
-  detect-changes:
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+  sync-jira:
     runs-on: ubuntu-latest
-    outputs:
-      changed_specs: ${{ steps.changes.outputs.specs }}
-      has_changes: ${{ steps.changes.outputs.has_changes }}
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-
-      - name: Detect Changed Spec Files
-        id: changes
-        run: |
-          # Get changed files in the merged PR or manual trigger
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            if [[ -n "${{ github.event.inputs.feature_path }}" ]]; then
-              # Manual trigger with specific feature
-              changed_files="${{ github.event.inputs.feature_path }}spec.md"
-              echo "Manual trigger for: $changed_files"
-            else
-              # Manual trigger - find all spec files
-              changed_files=$(find specs -name "spec.md" -type f | head -5)  # Limit to 5 for safety
-              echo "Manual trigger - processing all specs (limited to 5):"
-            fi
-          else
-            # PR merge - get actual changed files
-            changed_files=$(git diff --name-only HEAD~1 HEAD | grep -E "specs/.*/spec\.md|specs/.*/tasks\.md|jira/.*-draft\.yaml" || echo "")
-            echo "PR merge detected - changed files:"
-          fi
-          
-          echo "$changed_files"
-          
-          # Extract unique spec directories
-          spec_dirs=""
-          for file in $changed_files; do
-            if [[ $file =~ ^specs/([^/]+)/ ]]; then
-              spec_dir="specs/${BASH_REMATCH[1]}/"
-              if [[ ! " $spec_dirs " =~ " $spec_dir " ]]; then
-                spec_dirs="$spec_dirs $spec_dir"
-              fi
-            fi
-          done
-          
-          # Format as JSON array
-          if [[ -n "$spec_dirs" ]]; then
-            # Convert to JSON array format
-            json_array="["
-            first=true
-            for dir in $spec_dirs; do
-              if [[ $first == true ]]; then
-                first=false
-              else
-                json_array="$json_array,"
-              fi
-              json_array="$json_array\"$dir\""
-            done
-            json_array="$json_array]"
-            
-            echo "specs=$json_array" >> $GITHUB_OUTPUT
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            
-            echo "Detected spec directories for processing:"
-            echo "$json_array"
-          else
-            echo "specs=[]" >> $GITHUB_OUTPUT
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "No spec changes detected"
-          fi
-
-  generate-and-push-jira:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.has_changes == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        spec_dir: ${{ fromJSON(needs.detect-changes.outputs.changed_specs) }}
-      max-parallel: 3  # Limit concurrent JIRA operations
-      fail-fast: false
     
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install Dependencies
-        run: |
-          pip install -r requirements.txt
-
-      - name: Validate JIRA Configuration
-        run: |
-          if [[ -z "$JIRA_URL" || -z "$JIRA_EMAIL" || -z "$JIRA_TOKEN" || -z "$JIRA_PROJECT" ]]; then
-            echo "❌ Missing JIRA configuration secrets!"
-            echo "Required secrets: JIRA_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT"
-            exit 1
-          fi
-          echo "✅ JIRA configuration validated"
-
-      - name: Extract Feature Info
-        id: feature
-        run: |
-          spec_dir="${{ matrix.spec_dir }}"
-          feature_name=$(basename "$spec_dir")
-          
-          echo "feature_name=$feature_name" >> $GITHUB_OUTPUT
-          echo "spec_path=$spec_dir" >> $GITHUB_OUTPUT
-          
-          echo "Processing feature: $feature_name"
-          echo "Spec path: $spec_dir"
-
-      - name: Check Existing JIRA Draft
-        id: check_draft
-        run: |
-          feature_name="${{ steps.feature.outputs.feature_name }}"
-          draft_file="jira/${feature_name}-draft.yaml"
-          
-          if [[ -f "$draft_file" ]]; then
-            echo "draft_exists=true" >> $GITHUB_OUTPUT
-            echo "draft_file=$draft_file" >> $GITHUB_OUTPUT
-            echo "✅ Existing draft found: $draft_file"
-          else
-            echo "draft_exists=false" >> $GITHUB_OUTPUT
-            echo "📝 No existing draft found, will generate new one"
-          fi
-
-      - name: Generate JIRA Draft
-        if: steps.check_draft.outputs.draft_exists != 'true'
-        run: |
-          spec_path="${{ steps.feature.outputs.spec_path }}"
-          
-          echo "🔧 Generating JIRA draft for: $spec_path"
-          python3 scripts/generate_jira_draft.py "$spec_path"
-
-      - name: Validate Draft Quality
-        id: validate
-        run: |
-          feature_name="${{ steps.feature.outputs.feature_name }}"
-          draft_file="jira/${feature_name}-draft.yaml"
-          
-          if [[ ! -f "$draft_file" ]]; then
-            echo "❌ JIRA draft not found: $draft_file"
-            exit 1
-          fi
-          
-          # Basic YAML validation
-          python3 -c "
-          import yaml
-          import sys
-          
-          try:
-              with open('$draft_file', 'r') as f:
-                  draft = yaml.safe_load(f)
-              
-              # Validate required sections
-              required = ['metadata', 'project', 'epic', 'stories']
-              missing = [s for s in required if s not in draft]
-              
-              if missing:
-                  print(f'❌ Missing sections: {missing}')
-                  sys.exit(1)
-              
-              epic = draft['epic']
-              stories = draft['stories']
-              
-              print(f'✅ Draft validation passed')
-              print(f'   Epic: {epic[\"summary\"]}')
-              print(f'   Stories: {len(stories)}')
-              print(f'   Tasks: {len(draft.get(\"tasks\", []))}')
-              
-              # Set outputs for summary
-              with open('validation_summary.txt', 'w') as f:
-                  f.write(f'Epic: {epic[\"summary\"]}\\n')
-                  f.write(f'Stories: {len(stories)}\\n') 
-                  f.write(f'Tasks: {len(draft.get(\"tasks\", []))}\\n')
-                  
-          except Exception as e:
-              print(f'❌ Draft validation failed: {e}')
-              sys.exit(1)
-          "
-          
-          echo "draft_valid=true" >> $GITHUB_OUTPUT
-
-      - name: Push to JIRA (Dry Run)
-        if: github.event.inputs.dry_run == 'true'
-        run: |
-          feature_name="${{ steps.feature.outputs.feature_name }}"
-          draft_file="jira/${feature_name}-draft.yaml"
-          
-          echo "🔧 DRY RUN: Testing JIRA push for $feature_name"
-          python3 scripts/push_jira.py "$draft_file" --dry-run \
-            --github-repo "${{ github.repository }}" \
-            --github-branch "${{ github.ref_name }}" \
-            --github-pr "${{ github.event.pull_request.number || '' }}" \
-            --github-workflow "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-      - name: Push to JIRA (Production)
-        if: steps.validate.outputs.draft_valid == 'true' && github.event.inputs.dry_run != 'true'
-        id: push_jira
-        run: |
-          feature_name="${{ steps.feature.outputs.feature_name }}"
-          draft_file="jira/${feature_name}-draft.yaml"
-          
-          echo "🚀 Pushing $feature_name to JIRA..."
-          
-          # Run the push script with GitHub context and capture output
-          if python3 scripts/push_jira.py "$draft_file" \
-            --github-repo "${{ github.repository }}" \
-            --github-branch "${{ github.ref_name }}" \
-            --github-pr "${{ github.event.pull_request.number || '' }}" \
-            --github-workflow "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            2>&1 | tee push_output.log; then
-            echo "jira_push_success=true" >> $GITHUB_OUTPUT
-            
-            # Extract created epic key for summary
-            epic_key=$(grep -o "Epic: [A-Z]+-[0-9]+" push_output.log | head -1 | cut -d' ' -f2 || echo "Unknown")
-            echo "epic_key=$epic_key" >> $GITHUB_OUTPUT
-            
-            echo "✅ Successfully pushed to JIRA"
-          else
-            echo "jira_push_success=false" >> $GITHUB_OUTPUT
-            
-            # Check for specific error types and provide guidance
-            if grep -q "401.*Unauthorized" push_output.log; then
-              echo "❌ JIRA Authentication Failed (401 Unauthorized)"
-              echo "🔍 Check GitHub repository secrets: JIRA_EMAIL and JIRA_TOKEN"
-              echo "📖 See troubleshooting: troubleshooting/speckit-jira-integeration/002_github-action-failure.md"
-            elif grep -q "403.*Forbidden" push_output.log; then
-              echo "❌ JIRA Permission Denied (403 Forbidden)"
-              echo "🔍 User lacks necessary JIRA permissions for this project"
-            elif grep -q "404.*Not Found" push_output.log; then
-              echo "❌ JIRA Resource Not Found (404)"
-              echo "🔍 Check JIRA_PROJECT key and JIRA_URL"
-            else
-              echo "❌ JIRA push failed - check logs for details"
-            fi
-            
-            exit 1
-          fi
-
-      - name: Archive JIRA Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: jira-artifacts-${{ steps.feature.outputs.feature_name }}
-          path: |
-            jira/${{ steps.feature.outputs.feature_name }}-draft.yaml
-            jira/${{ steps.feature.outputs.feature_name }}-map.json
-            push_output.log
-          retention-days: 30
-
-      - name: Comment on PR (Success)
-        if: steps.push_jira.outputs.jira_push_success == 'true' && github.event.pull_request.number
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const featureName = '${{ steps.feature.outputs.feature_name }}';
-            const epicKey = '${{ steps.push_jira.outputs.epic_key }}';
-            const jiraUrl = '${{ env.JIRA_URL }}';
-            
-            const comment = `🎉 **JIRA Integration Successful!**
-            
-            Feature: \`${featureName}\`
-            Epic Created: [\`${epicKey}\`](${jiraUrl}/browse/${epicKey})
-            
-            📋 **Next Steps:**
-            1. Review JIRA epic and stories
-            2. Assign tasks to development teams
-            3. Begin implementation using \`/speckit implement ${epicKey}\`
-            
-            📁 **Artifacts:** Check workflow artifacts for draft and mapping files.`;
-            
-            github.rest.issues.createComment({
-              issue_number: ${{ github.event.pull_request.number }},
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
-
-      - name: Create Issue on Failure
-        if: failure() && github.event.pull_request.number
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const featureName = '${{ steps.feature.outputs.feature_name }}';
-            
-            const issueBody = `❌ **JIRA Integration Failed**
-            
-            Feature: \`${featureName}\`
-            Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-            
-            **Details:**
-            - Triggered by PR merge: #${{ github.event.pull_request.number }}
-            - Failed during JIRA push process
-            
-            **Common Issues & Solutions:**
-            
-            🔐 **Authentication (401 Unauthorized)**
-            - Verify GitHub secrets: \`JIRA_EMAIL\` and \`JIRA_TOKEN\`
-            - Ensure JIRA_TOKEN is an API token (not password)
-            - Check token hasn't expired
-            
-            🚫 **Permission Denied (403 Forbidden)**  
-            - Contact JIRA admin for project access
-            - Verify user has "Create Issues" permission
-            
-            🔍 **Resource Not Found (404)**
-            - Check \`JIRA_PROJECT\` key is correct
-            - Verify \`JIRA_URL\` is accessible
-            
-            **Action Required:**
-            1. Check workflow logs for specific error details
-            2. See troubleshooting guide: \`troubleshooting/speckit-jira-integeration/002_github-action-failure.md\`
-            3. Test manually: \`python3 scripts/push_jira.py jira/${featureName}-draft.yaml --dry-run\`
-            4. Fix configuration and re-run workflow
-            
-            **Labels:** jira-integration, automation-failure`;
-            
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `JIRA Integration Failed: ${featureName}`,
-              body: issueBody,
-              labels: ['jira-integration', 'automation-failure', 'bug']
-            });
-
-  summary:
-    needs: [detect-changes, generate-and-push-jira]
-    if: always() && needs.detect-changes.outputs.has_changes == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Workflow Summary
-        run: |
-          echo "## 🔄 SPEC-KIT → JIRA Integration Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [[ "${{ needs.generate-and-push-jira.result }}" == "success" ]]; then
-            echo "✅ **Status:** Successfully processed all spec changes" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Features Processed:**" >> $GITHUB_STEP_SUMMARY
-            echo '${{ needs.detect-changes.outputs.changed_specs }}' | jq -r '.[]' | while read spec; do
-              feature=$(basename "$spec")
-              echo "- 📋 $feature → JIRA Epic Created" >> $GITHUB_STEP_SUMMARY
-            done
-          elif [[ "${{ needs.generate-and-push-jira.result }}" == "failure" ]]; then
-            echo "❌ **Status:** Some features failed to process" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "🔍 **Action Required:** Check individual job logs for details" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ **Status:** Processing completed with mixed results" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
-          echo "1. 📋 Review created JIRA epics and stories" >> $GITHUB_STEP_SUMMARY
-          echo "2. 👥 Assign tasks to development teams" >> $GITHUB_STEP_SUMMARY
-          echo "3. 🚀 Begin implementation with \`/speckit implement EPIC-KEY\`" >> $GITHUB_STEP_SUMMARY
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests PyYAML
+        
+    - name: Sync specs to JIRA
+      env:
+        # JIRA Configuration - set these in GitHub repository secrets
+        JIRA_URL: ${{ secrets.JIRA_URL }}
+        JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+        JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+        JIRA_PROJECT: ${{ secrets.JIRA_PROJECT }}
+        
+        # GitHub configuration is auto-detected from GitHub Actions environment
+        # No need to set GITHUB_REPO_URL or GITHUB_BRANCH manually
+        
+        # Optional: Override issue type mappings to match your JIRA project
+        # Check your JIRA project's available issue types first
+        ISSUE_TYPE_EPIC: "Epic"
+        ISSUE_TYPE_STORY: "Task"      # Fallback if "Story" not available
+        ISSUE_TYPE_TASK: "Task"       # Use "Task" instead of "Sub-task" 
+        ISSUE_TYPE_BUG: "Bug"
+        
+        # Set to false for production, true for testing
+        DRY_RUN: "false"
+        
+      run: |
+        cd scripts
+        python jira_sync.py
+        
+    - name: Upload YAML artifacts (on failure)
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: jira-sync-yaml-files
+        path: /tmp/jira_sync_*/
+        retention-days: 7
