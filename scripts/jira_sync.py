@@ -3,6 +3,7 @@ import requests
 import yaml
 import tempfile
 import shutil
+import copy
 from pathlib import Path
 
 # ---------------------------------------
@@ -93,12 +94,75 @@ SPEC_FOLDER = Path("specs")
 TEMP_YAML_DIR = Path(tempfile.mkdtemp(prefix="jira_sync_"))
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
+# Performance optimizations - caching
+_template_cache = {}
+_issue_type_mapping = None
+
 # ---------------------------------------
 # JIRA API
 # ---------------------------------------
 
 def markdown_to_adf(text):
-    """Convert markdown text to Atlassian Document Format (ADF)"""
+    """Simplified markdown to ADF conversion for better performance"""
+    if not text or not text.strip():
+        return {
+            "version": 1,
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": ""}]
+            }]
+        }
+    
+    # Simplified approach - preserve text with basic paragraph structure
+    # Split into paragraphs and handle basic formatting
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+    
+    adf_content = []
+    for paragraph in paragraphs:
+        if paragraph.startswith('# '):
+            # Header
+            adf_content.append({
+                "type": "heading",
+                "attrs": {"level": 1},
+                "content": [{"type": "text", "text": paragraph[2:].strip()}]
+            })
+        elif paragraph.startswith('## '):
+            # Header level 2
+            adf_content.append({
+                "type": "heading",
+                "attrs": {"level": 2},
+                "content": [{"type": "text", "text": paragraph[3:].strip()}]
+            })
+        elif paragraph.startswith('```'):
+            # Code block
+            adf_content.append({
+                "type": "codeBlock",
+                "attrs": {"language": "text"},
+                "content": [{"type": "text", "text": paragraph.replace('```', '').strip()}]
+            })
+        else:
+            # Regular paragraph
+            adf_content.append({
+                "type": "paragraph",
+                "content": [{"type": "text", "text": paragraph[:32000]}]
+            })
+    
+    if not adf_content:
+        adf_content = [{
+            "type": "paragraph",
+            "content": [{"type": "text", "text": text[:32000]}]
+        }]
+    
+    return {
+        "version": 1,
+        "type": "doc",
+        "content": adf_content
+    }
+
+
+def markdown_to_adf_original(text):
+    """Original complex markdown to ADF conversion (kept as backup)"""
     if not text or not text.strip():
         return {
             "version": 1,
@@ -245,7 +309,17 @@ def markdown_to_adf(text):
 
 
 def parse_inline_markdown(text):
-    """Parse inline markdown (bold, italic, code, links) into ADF content"""
+    """Simplified inline markdown parsing for better performance"""
+    if not text:
+        return [{"type": "text", "text": ""}]
+    
+    # Simplified approach - just return text with minimal processing
+    # This avoids complex character-by-character parsing
+    return [{"type": "text", "text": text}]
+
+
+def parse_inline_markdown_original(text):
+    """Original complex inline markdown parsing (kept as backup)"""
     if not text:
         return [{"type": "text", "text": ""}]
     
@@ -363,6 +437,13 @@ def parse_inline_markdown(text):
     return content
 
 
+def get_cached_template(issue_type):
+    """Get cached template to avoid repeated file I/O"""
+    if issue_type not in _template_cache:
+        _template_cache[issue_type] = load_template(issue_type)
+    return _template_cache[issue_type]
+
+
 def load_template(issue_type):
     """Load YAML template for specific issue type from single templates file"""
     # Dynamic template mapping that adapts to actual issue types
@@ -372,6 +453,7 @@ def load_template(issue_type):
         ISSUE_TYPE_TASK: "task",
         ISSUE_TYPE_BUG: "bug",
         "Sub-task": "subtask",
+        "Subtask": "subtask",  # JIRA Subtask type
         "Task": "task",  # Standard Task type
         "Story": "story",  # Standard Story type
         "Epic": "epic",  # Standard Epic type
@@ -420,8 +502,8 @@ def create_yaml_for_item(title, description, file_path, issue_type, parent_key=N
     relative_path = file_path.relative_to(Path.cwd()) if file_path.is_absolute() else file_path
     github_link = f"{GITHUB_REPO_URL}/blob/{GITHUB_BRANCH}/{relative_path}"
     
-    # Load template data
-    template_data = load_template(issue_type)
+    # Load template data (cached)
+    template_data = get_cached_template(issue_type)
     
     # Extract acceptance criteria from description if it's a story
     acceptance_criteria = ""
@@ -756,7 +838,7 @@ def process_specs():
                     
                     # Structured task with title and description
                     task_yaml_file, task_yaml_data = create_yaml_for_item(
-                        task_title, task_desc, file, ISSUE_TYPE_TASK, story_key,
+                        task_title, task_desc, file, "Task", None,  # No parent - flat structure
                         category=task_category, time_estimate=time_estimate
                     )
                 else:
@@ -768,7 +850,7 @@ def process_specs():
                         task_category = "testing"
                     
                     task_yaml_file, task_yaml_data = create_yaml_for_item(
-                        task_title, task_title, file, ISSUE_TYPE_TASK, story_key,
+                        task_title, task_title, file, "Task", None,  # No parent - flat structure
                         category=task_category, time_estimate="2h"
                     )
                 

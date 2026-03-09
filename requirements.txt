@@ -1,2 +1,14 @@
+# JIRA Integration Tool Requirements
+
+# Core dependencies for JIRA API integration
+requests>=2.31.0
 PyYAML>=6.0
-requests>=2.25.0
+
+# Optional: For enhanced markdown processing (if needed)
+# markdown>=3.4.4
+# beautifulsoup4>=4.12.2
+
+# Development dependencies (uncomment if needed)
+# pytest>=7.4.0
+# black>=23.0.0
+# flake8>=6.0.0
