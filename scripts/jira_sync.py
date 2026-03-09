@@ -200,7 +200,7 @@ def get_default_values():
 # ---------------------------------------
 
 def markdown_to_adf(text):
-    """Simplified markdown to ADF conversion for better performance"""
+    """Enhanced markdown to ADF conversion with proper formatting"""
     if not text or not text.strip():
         return {
             "version": 1,
@@ -211,39 +211,86 @@ def markdown_to_adf(text):
             }]
         }
     
-    # Simplified approach - preserve text with basic paragraph structure
-    # Split into paragraphs and handle basic formatting
-    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-    
     adf_content = []
-    for paragraph in paragraphs:
-        if paragraph.startswith('# '):
-            # Header
+    lines = text.split('\n')
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        
+        # Skip empty lines between blocks
+        if not stripped:
+            i += 1
+            continue
+        
+        # Headers (# ## ### etc)
+        if stripped.startswith('#'):
+            level = 0
+            for char in stripped:
+                if char == '#':
+                    level += 1
+                else:
+                    break
+            text_content = stripped[level:].strip()
             adf_content.append({
                 "type": "heading",
-                "attrs": {"level": 1},
-                "content": [{"type": "text", "text": paragraph[2:].strip()}]
+                "attrs": {"level": min(level, 6)},
+                "content": parse_inline_markdown(text_content)
             })
-        elif paragraph.startswith('## '):
-            # Header level 2
-            adf_content.append({
-                "type": "heading",
-                "attrs": {"level": 2},
-                "content": [{"type": "text", "text": paragraph[3:].strip()}]
-            })
-        elif paragraph.startswith('```'):
-            # Code block
+            i += 1
+        
+        # Horizontal rule (--- or ***)
+        elif stripped in ('---', '***', '___'):
+            adf_content.append({"type": "rule"})
+            i += 1
+        
+        # Code blocks (```)
+        elif stripped.startswith('```'):
+            code_lines = []
+            language = stripped[3:].strip()
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith('```'):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # Skip closing ```
             adf_content.append({
                 "type": "codeBlock",
-                "attrs": {"language": "text"},
-                "content": [{"type": "text", "text": paragraph.replace('```', '').strip()}]
+                "attrs": {"language": language or "text"},
+                "content": [{"type": "text", "text": '\n'.join(code_lines)}]
             })
-        else:
-            # Regular paragraph
+        
+        # Bullet lists (- or *)
+        elif stripped.startswith(('- ', '* ')):
+            list_items = []
+            while i < len(lines) and lines[i].strip().startswith(('- ', '* ')):
+                item_text = lines[i].strip()[2:]
+                list_items.append({
+                    "type": "listItem",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": parse_inline_markdown(item_text)
+                    }]
+                })
+                i += 1
             adf_content.append({
-                "type": "paragraph",
-                "content": [{"type": "text", "text": paragraph[:32000]}]
+                "type": "bulletList",
+                "content": list_items
             })
+        
+        # Regular paragraph
+        else:
+            para_lines = []
+            while i < len(lines) and lines[i].strip() and not lines[i].strip().startswith(('#', '```', '>', '-', '*', '1.')):
+                para_lines.append(lines[i].strip())
+                i += 1
+            
+            if para_lines:
+                para_text = ' '.join(para_lines)
+                adf_content.append({
+                    "type": "paragraph",
+                    "content": parse_inline_markdown(para_text)
+                })
     
     if not adf_content:
         adf_content = [{
@@ -406,13 +453,122 @@ def markdown_to_adf_original(text):
 
 
 def parse_inline_markdown(text):
-    """Simplified inline markdown parsing for better performance"""
+    """Enhanced inline markdown parsing for proper ADF formatting"""
     if not text:
         return [{"type": "text", "text": ""}]
     
-    # Simplified approach - just return text with minimal processing
-    # This avoids complex character-by-character parsing
-    return [{"type": "text", "text": text}]
+    content = []
+    i = 0
+    current_text = ""
+    
+    while i < len(text):
+        # Bold (**text** or __text__)
+        if text[i:i+2] in ('**', '__'):
+            if current_text:
+                content.append({"type": "text", "text": current_text})
+                current_text = ""
+            
+            marker = text[i:i+2]
+            i += 2
+            bold_text = ""
+            while i < len(text) - 1:
+                if text[i:i+2] == marker:
+                    break
+                bold_text += text[i]
+                i += 1
+            
+            if bold_text:
+                content.append({
+                    "type": "text",
+                    "text": bold_text,
+                    "marks": [{"type": "strong"}]
+                })
+            i += 2
+        
+        # Italic (*text* or _text_)
+        elif text[i] in ('*', '_') and (i == 0 or text[i-1] not in ('*', '_')):
+            if current_text:
+                content.append({"type": "text", "text": current_text})
+                current_text = ""
+            
+            marker = text[i]
+            i += 1
+            italic_text = ""
+            while i < len(text):
+                if text[i] == marker and (i+1 >= len(text) or text[i+1] not in ('*', '_')):
+                    break
+                italic_text += text[i]
+                i += 1
+            
+            if italic_text:
+                content.append({
+                    "type": "text",
+                    "text": italic_text,
+                    "marks": [{"type": "em"}]
+                })
+            i += 1
+        
+        # Inline code (`code`)
+        elif text[i] == '`':
+            if current_text:
+                content.append({"type": "text", "text": current_text})
+                current_text = ""
+            
+            i += 1
+            code_text = ""
+            while i < len(text) and text[i] != '`':
+                code_text += text[i]
+                i += 1
+            
+            if code_text:
+                content.append({
+                    "type": "text",
+                    "text": code_text,
+                    "marks": [{"type": "code"}]
+                })
+            i += 1
+        
+        # Links [text](url)
+        elif text[i] == '[':
+            if current_text:
+                content.append({"type": "text", "text": current_text})
+                current_text = ""
+            
+            i += 1
+            link_text = ""
+            while i < len(text) and text[i] != ']':
+                link_text += text[i]
+                i += 1
+            
+            i += 1  # Skip ]
+            if i < len(text) and text[i] == '(':
+                i += 1
+                url = ""
+                while i < len(text) and text[i] != ')':
+                    url += text[i]
+                    i += 1
+                i += 1  # Skip )
+                
+                content.append({
+                    "type": "text",
+                    "text": link_text,
+                    "marks": [{"type": "link", "attrs": {"href": url}}]
+                })
+            else:
+                current_text += '[' + link_text + ']'
+        
+        # Regular text
+        else:
+            current_text += text[i]
+            i += 1
+    
+    if current_text:
+        content.append({"type": "text", "text": current_text})
+    
+    if not content:
+        content = [{"type": "text", "text": ""}]
+    
+    return content
 
 
 def parse_inline_markdown_original(text):
@@ -693,19 +849,55 @@ def create_json_for_item(title, description, file_path, issue_type, parent_key=N
 
 
 def json_to_adf_description(json_data):
-    """Convert JSON data to ADF description with GitHub link"""
+    """Convert JSON data to ADF description with enhanced GitHub link formatting"""
     desc = json_data['description']
     
-    # Create enhanced description with prominent GitHub link
-    enhanced_description = f"""**📋 Specification Source**
-
-🔗 **GitHub:** [{desc['source_file']}]({desc['github_link']})
-
----
-
-{desc['content']}"""
-    
-    return markdown_to_adf(enhanced_description)
+    # Create enhanced description with proper ADF structure
+    return {
+        "version": 1,
+        "type": "doc", 
+        "content": [
+            {
+                "type": "panel",
+                "attrs": {
+                    "panelType": "info"
+                },
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "📋 Specification Source",
+                                "marks": [{"type": "strong"}]
+                            }
+                        ]
+                    },
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "🔗 GitHub: "
+                            },
+                            {
+                                "type": "text",
+                                "text": desc['source_file'],
+                                "marks": [{
+                                    "type": "link",
+                                    "attrs": {"href": desc['github_link']}
+                                }]
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "rule"
+            },
+            *markdown_to_adf(desc['content'])["content"]
+        ]
+    }
 
 
 def get_project_issue_types():
