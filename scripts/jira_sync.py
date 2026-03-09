@@ -94,6 +94,22 @@ SPEC_FOLDER = Path("specs")
 TEMP_YAML_DIR = Path(tempfile.mkdtemp(prefix="jira_sync_"))
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
+# Validate specs folder and show initial structure
+print(f"\n📂 SPECS FOLDER VALIDATION")
+print(f"   Expected path: {SPEC_FOLDER.absolute()}")
+if SPEC_FOLDER.exists():
+    print(f"   ✅ Specs folder exists")
+    # Count markdown files
+    all_md = list(SPEC_FOLDER.glob("**/*.md"))
+    spec_md = list(SPEC_FOLDER.glob("**/spec.md"))
+    other_md = [f for f in all_md if f.name != "spec.md"]
+    print(f"   📋 Found {len(spec_md)} epic specs (spec.md)")
+    print(f"   📄 Found {len(other_md)} story specs (other .md files)")
+    print(f"   📊 Total markdown files: {len(all_md)}")
+else:
+    print(f"   ⚠️  Specs folder does not exist!")
+    print(f"   💡 Create the folder and add spec files to proceed")
+
 # Performance optimizations - caching
 _template_cache = {}
 _issue_type_mapping = None
@@ -774,6 +790,40 @@ def process_specs():
     
     print(f"\n📁 Creating temp YAML directory: {TEMP_YAML_DIR}")
     
+    # First, identify and log all specs that will be processed
+    print(f"\n🔍 IDENTIFYING SPECS FOR JIRA GENERATION")
+    print(f"   📂 Spec Folder: {SPEC_FOLDER.absolute()}")
+    print("="*60)
+    
+    # Collect epic specs (spec.md files)
+    epic_specs = list(sorted(SPEC_FOLDER.glob("**/spec.md")))
+    print(f"\n📋 EPIC SPECS IDENTIFIED: {len(epic_specs)}")
+    for i, spec_file in enumerate(epic_specs, 1):
+        print(f"   {i}. {spec_file.relative_to(SPEC_FOLDER)}")
+        print(f"      Full path: {spec_file.absolute()}")
+    
+    if not epic_specs:
+        print("   ⚠️  No epic specs (spec.md) found!")
+    
+    # Collect story specs (other .md files)
+    all_md_files = list(sorted(SPEC_FOLDER.glob("**/*.md")))
+    story_specs = [f for f in all_md_files if f.name != "spec.md"]
+    print(f"\n📄 STORY SPECS IDENTIFIED: {len(story_specs)}")
+    for i, spec_file in enumerate(story_specs, 1):
+        print(f"   {i}. {spec_file.relative_to(SPEC_FOLDER)}")
+        print(f"      Full path: {spec_file.absolute()}")
+    
+    if not story_specs:
+        print("   ⚠️  No story specs (non-spec.md files) found!")
+    
+    total_specs = len(epic_specs) + len(story_specs)
+    print(f"\n📊 TOTAL SPECS TO PROCESS: {total_specs}")
+    print("="*60)
+    
+    if total_specs == 0:
+        print("❌ ERROR: No spec files found to process!")
+        return
+    
     epic_key = None
     epic_count = 0
     story_count = 0
@@ -907,6 +957,32 @@ def preview_structure():
     print("\n==============================")
     print("JIRA STRUCTURE PREVIEW")
     print("==============================")
+    
+    # First, identify and log all specs that will be processed
+    print(f"\n🔍 IDENTIFYING SPECS FOR PREVIEW")
+    print(f"   📂 Spec Folder: {SPEC_FOLDER.absolute()}")
+    print("="*50)
+    
+    # Collect epic specs (spec.md files)
+    epic_specs = list(sorted(SPEC_FOLDER.glob("**/spec.md")))
+    print(f"\n📋 EPIC SPECS IDENTIFIED: {len(epic_specs)}")
+    for i, spec_file in enumerate(epic_specs, 1):
+        print(f"   {i}. {spec_file.relative_to(SPEC_FOLDER)}")
+    
+    # Collect story specs (other .md files)
+    all_md_files = list(sorted(SPEC_FOLDER.glob("**/*.md")))
+    story_specs = [f for f in all_md_files if f.name != "spec.md"]
+    print(f"\n📄 STORY SPECS IDENTIFIED: {len(story_specs)}")
+    for i, spec_file in enumerate(story_specs, 1):
+        print(f"   {i}. {spec_file.relative_to(SPEC_FOLDER)}")
+    
+    total_specs = len(epic_specs) + len(story_specs)
+    print(f"\n📊 TOTAL SPECS FOR PREVIEW: {total_specs}")
+    print("="*50)
+    
+    if total_specs == 0:
+        print("❌ ERROR: No spec files found to preview!")
+        return
 
     epic_count = 0
     story_count = 0
@@ -955,6 +1031,19 @@ def preview_structure():
 def main():
     # Declare global variables at the start of function
     global ISSUE_TYPE_STORY, ISSUE_TYPE_TASK, ISSUE_TYPE_BUG
+
+    print(f"\n🚀 STARTING JIRA SYNC")
+    print(f"   Mode: {'DRY RUN (Preview Only)' if DRY_RUN else 'LIVE MODE (Will Create Issues)'}")
+    
+    # Perform early spec discovery for logging
+    if SPEC_FOLDER.exists():
+        epic_specs = list(SPEC_FOLDER.glob("**/spec.md"))
+        story_specs = [f for f in SPEC_FOLDER.glob("**/*.md") if f.name != "spec.md"]
+        print(f"   📋 Epic specs found: {len(epic_specs)}")
+        print(f"   📄 Story specs found: {len(story_specs)}")
+        print(f"   📊 Total specs to process: {len(epic_specs) + len(story_specs)}")
+    else:
+        print(f"   ⚠️  Specs folder not found: {SPEC_FOLDER.absolute()}")
 
     if DRY_RUN:
         preview_structure()
