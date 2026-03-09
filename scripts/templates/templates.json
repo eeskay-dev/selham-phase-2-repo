@@ -1,0 +1,129 @@
+{
+  "templates": {
+    "epic": {
+      "summary": "{SUMMARY}",
+      "issue_type": "Epic",
+      "description": {
+        "source_file": "{SOURCE_FILE}",
+        "github_link": "{GITHUB_LINK}",
+        "content": "{CONTENT}"
+      },
+      "labels": [
+        "epic",
+        "specification",
+        "auto-generated"
+      ],
+      "priority": "High",
+      "epic_name": "{EPIC_NAME}",
+      "epic_description": "{EPIC_DESCRIPTION}",
+      "components": [],
+      "custom_fields": {
+        "business_value": "High",
+        "technical_complexity": "Medium"
+      }
+    },
+    "story": {
+      "summary": "{SUMMARY}",
+      "issue_type": "Story", 
+      "parent": "{PARENT_KEY}",
+      "description": {
+        "source_file": "{SOURCE_FILE}",
+        "github_link": "{GITHUB_LINK}",
+        "content": "{CONTENT}"
+      },
+      "labels": [
+        "story",
+        "feature",
+        "auto-generated"
+      ],
+      "priority": "Medium",
+      "story_points": 5,
+      "acceptance_criteria": "{ACCEPTANCE_CRITERIA}",
+      "components": [],
+      "custom_fields": {
+        "category": "{CATEGORY}",
+        "time_estimate": "{TIME_ESTIMATE}"
+      }
+    },
+    "task": {
+      "summary": "{SUMMARY}",
+      "issue_type": "Task",
+      "parent": "{PARENT_KEY}",
+      "description": {
+        "source_file": "{SOURCE_FILE}", 
+        "github_link": "{GITHUB_LINK}",
+        "content": "{CONTENT}"
+      },
+      "labels": [
+        "task",
+        "implementation",
+        "auto-generated"
+      ],
+      "priority": "Medium",
+      "components": [],
+      "custom_fields": {
+        "category": "{CATEGORY}",
+        "time_estimate": "{TIME_ESTIMATE}",
+        "complexity": "Medium"
+      }
+    },
+    "subtask": {
+      "summary": "{SUMMARY}",
+      "issue_type": "Sub-task",
+      "parent": "{PARENT_KEY}",
+      "description": {
+        "source_file": "{SOURCE_FILE}",
+        "github_link": "{GITHUB_LINK}", 
+        "content": "{CONTENT}"
+      },
+      "labels": [
+        "subtask",
+        "implementation", 
+        "auto-generated"
+      ],
+      "priority": "Medium",
+      "components": [],
+      "custom_fields": {
+        "category": "{CATEGORY}",
+        "time_estimate": "{TIME_ESTIMATE}"
+      }
+    },
+    "bug": {
+      "summary": "{SUMMARY}",
+      "issue_type": "Bug",
+      "description": {
+        "source_file": "{SOURCE_FILE}",
+        "github_link": "{GITHUB_LINK}",
+        "content": "{CONTENT}"
+      },
+      "labels": [
+        "bug",
+        "defect",
+        "auto-generated"
+      ],
+      "priority": "High",
+      "severity": "{SEVERITY}",
+      "environment": "{ENVIRONMENT}",
+      "steps_to_reproduce": "{STEPS_TO_REPRODUCE}",
+      "expected_behavior": "{EXPECTED_BEHAVIOR}",
+      "actual_behavior": "{ACTUAL_BEHAVIOR}",
+      "components": [],
+      "custom_fields": {
+        "found_in_version": "current",
+        "reproducibility": "Always"
+      }
+    }
+  },
+  "field_mappings": {
+    "story_points": "customfield_10016",
+    "epic_name": "customfield_10011", 
+    "epic_link": "customfield_10014",
+    "sprint": "customfield_10020"
+  },
+  "default_values": {
+    "priority": "Medium",
+    "story_points": 3,
+    "severity": "Medium",
+    "environment": "Development"
+  }
+}

@@ -1,6 +1,6 @@
 import os
 import requests
-import yaml
+import json
 import tempfile
 import shutil
 import copy
@@ -94,7 +94,7 @@ auth = (EMAIL, TOKEN)
 SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent  # Go up one level from scripts/ to repo root
 SPEC_FOLDER = REPO_ROOT / "specs"
-TEMP_YAML_DIR = Path(tempfile.mkdtemp(prefix="jira_sync_"))
+TEMP_JSON_DIR = Path(tempfile.mkdtemp(prefix="jira_sync_"))
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # Validate specs folder and show initial structure
@@ -116,6 +116,32 @@ else:
 # Performance optimizations - caching
 _template_cache = {}
 _issue_type_mapping = None
+_field_mapping_cache = None
+
+# Enhanced JSON-based JIRA field mapping
+def get_field_mappings():
+    """Load and cache JIRA field mappings from templates.json"""
+    global _field_mapping_cache
+    
+    if _field_mapping_cache is None:
+        templates_file = TEMPLATE_DIR / "templates.json"
+        if templates_file.exists():
+            with open(templates_file, 'r', encoding='utf-8') as f:
+                all_templates = json.load(f)
+                _field_mapping_cache = all_templates.get('field_mappings', {})
+        else:
+            _field_mapping_cache = {}
+    
+    return _field_mapping_cache
+
+def get_default_values():
+    """Load default values from templates.json"""
+    templates_file = TEMPLATE_DIR / "templates.json"
+    if templates_file.exists():
+        with open(templates_file, 'r', encoding='utf-8') as f:
+            all_templates = json.load(f)
+            return all_templates.get('default_values', {})
+    return {}
 
 # ---------------------------------------
 # JIRA API
@@ -464,7 +490,7 @@ def get_cached_template(issue_type):
 
 
 def load_template(issue_type):
-    """Load YAML template for specific issue type from single templates file"""
+    """Load JSON template for specific issue type from single templates file"""
     # Dynamic template mapping that adapts to actual issue types
     template_map = {
         ISSUE_TYPE_EPIC: "epic",
@@ -495,13 +521,13 @@ def load_template(issue_type):
         else:
             template_key = "task"  # Default fallback
     
-    templates_file = TEMPLATE_DIR / "templates.yaml"
+    templates_file = TEMPLATE_DIR / "templates.json"
     
     if not templates_file.exists():
         raise FileNotFoundError(f"Templates file not found: {templates_file}")
     
     with open(templates_file, 'r', encoding='utf-8') as f:
-        all_templates = yaml.safe_load(f)
+        all_templates = json.load(f)
     
     if 'templates' not in all_templates or template_key not in all_templates['templates']:
         # Fallback to task template if specific template not found
@@ -514,8 +540,8 @@ def load_template(issue_type):
     return all_templates['templates'][template_key]
 
 
-def create_yaml_for_item(title, description, file_path, issue_type, parent_key=None, **kwargs):
-    """Create a JIRA item YAML file from unified template"""
+def create_json_for_item(title, description, file_path, issue_type, parent_key=None, **kwargs):
+    """Create a JIRA item JSON file from unified template"""
     
     # Generate GitHub link - use relative path from repository root
     try:
@@ -542,7 +568,7 @@ def create_yaml_for_item(title, description, file_path, issue_type, parent_key=N
     expected_behavior = ""
     actual_behavior = ""
     severity = kwargs.get('severity', 'Medium')
-    environment = kwargs.get('environment', 'Not specified')
+    environment = kwargs.get('environment', 'Development')
     
     if issue_type == ISSUE_TYPE_BUG:
         if "## Steps to Reproduce" in description:
@@ -585,7 +611,7 @@ def create_yaml_for_item(title, description, file_path, issue_type, parent_key=N
     
     # Deep copy template data and replace placeholders
     import copy
-    yaml_data = copy.deepcopy(template_data)
+    json_data = copy.deepcopy(template_data)
     
     def replace_placeholders(obj):
         if isinstance(obj, dict):
@@ -600,23 +626,23 @@ def create_yaml_for_item(title, description, file_path, issue_type, parent_key=N
         else:
             return obj
     
-    yaml_data = replace_placeholders(yaml_data)
+    json_data = replace_placeholders(json_data)
     
-    # Create temp YAML file
+    # Create temp JSON file
     safe_title = title[:50].replace(' ', '_').replace('/', '_').replace(':', '_')
-    yaml_filename = f"{issue_type.lower().replace('-', '_')}_{safe_title}.yaml"
-    yaml_file_path = TEMP_YAML_DIR / yaml_filename
+    json_filename = f"{issue_type.lower().replace('-', '_')}_{safe_title}.json"
+    json_file_path = TEMP_JSON_DIR / json_filename
     
-    with open(yaml_file_path, 'w', encoding='utf-8') as f:
-        yaml.dump(yaml_data, f, default_flow_style=False, allow_unicode=True)
+    with open(json_file_path, 'w', encoding='utf-8') as f:
+        json.dump(json_data, f, indent=2, ensure_ascii=False)
     
-    print(f"  📝 Created YAML: {yaml_file_path.name} (from templates.yaml:{issue_type.lower()})")
-    return yaml_file_path, yaml_data
+    print(f"  📝 Created JSON: {json_file_path.name} (from templates.json:{issue_type.lower()})")
+    return json_file_path, json_data
 
 
-def yaml_to_adf_description(yaml_data):
-    """Convert YAML data to ADF description with GitHub link"""
-    desc = yaml_data['description']
+def json_to_adf_description(json_data):
+    """Convert JSON data to ADF description with GitHub link"""
+    desc = json_data['description']
     
     # Create enhanced description with prominent GitHub link
     enhanced_description = f"""**📋 Specification Source**
@@ -653,12 +679,41 @@ def get_project_issue_types():
     
     return []
 
-def create_issue_from_yaml(yaml_file_path, yaml_data):
-    """Create JIRA issue from template-based YAML data"""
+def validate_json_structure(json_data, json_file_path):
+    """Validate JSON structure for JIRA issue creation"""
+    required_fields = ['summary', 'issue_type', 'description']
+    missing_fields = []
     
-    summary = yaml_data['summary']
-    issue_type = yaml_data['issue_type']
-    parent_key = yaml_data.get('parent')
+    for field in required_fields:
+        if field not in json_data or not json_data[field]:
+            missing_fields.append(field)
+    
+    if missing_fields:
+        print(f"⚠️  WARNING: Missing required fields in {json_file_path.name}: {', '.join(missing_fields)}")
+        return False
+    
+    # Validate description structure
+    if isinstance(json_data['description'], dict):
+        desc_required = ['source_file', 'github_link', 'content']
+        desc_missing = [f for f in desc_required if f not in json_data['description']]
+        if desc_missing:
+            print(f"⚠️  WARNING: Missing description fields in {json_file_path.name}: {', '.join(desc_missing)}")
+            return False
+    
+    return True
+
+
+def create_issue_from_json(json_file_path, json_data):
+    """Create JIRA issue from template-based JSON data"""
+    
+    # Validate JSON structure first
+    if not validate_json_structure(json_data, json_file_path):
+        print(f"❌ ERROR: Invalid JSON structure in {json_file_path.name}")
+        return {"key": "ERROR"}
+    
+    summary = json_data['summary']
+    issue_type = json_data['issue_type']
+    parent_key = json_data.get('parent')
     
     # Remove empty parent key
     if parent_key == "":
@@ -666,26 +721,26 @@ def create_issue_from_yaml(yaml_file_path, yaml_data):
     
     if DRY_RUN:
         print("\n--- DRY RUN ---")
-        print("YAML FILE:", yaml_file_path.name)
+        print("JSON FILE:", json_file_path.name)
         print("TYPE     :", issue_type)
         print("TITLE    :", summary)
-        print("GITHUB   :", yaml_data['description']['github_link'])
-        print("SOURCE   :", yaml_data['description']['source_file'])
-        print("LABELS   :", yaml_data.get('labels', []))
-        print("PRIORITY :", yaml_data.get('priority', 'Medium'))
-        if yaml_data.get('severity'):
-            print("SEVERITY :", yaml_data['severity'])
+        print("GITHUB   :", json_data['description']['github_link'])
+        print("SOURCE   :", json_data['description']['source_file'])
+        print("LABELS   :", json_data.get('labels', []))
+        print("PRIORITY :", json_data.get('priority', 'Medium'))
+        if json_data.get('severity'):
+            print("SEVERITY :", json_data['severity'])
         if parent_key:
             print("PARENT   :", parent_key)
-        if yaml_data.get('story_points'):
-            print("POINTS   :", yaml_data['story_points'])
+        if json_data.get('story_points'):
+            print("POINTS   :", json_data['story_points'])
         print("---------------")
         return {"key": "DRYRUN"}
 
-    # Convert YAML description to ADF with GitHub link
-    adf_description = yaml_to_adf_description(yaml_data)
+    # Convert JSON description to ADF with GitHub link
+    adf_description = json_to_adf_description(json_data)
 
-    # Build JIRA payload from YAML data
+    # Build JIRA payload from JSON data
     payload = {
         "fields": {
             "project": {"key": PROJECT},
@@ -700,22 +755,49 @@ def create_issue_from_yaml(yaml_file_path, yaml_data):
         payload["fields"]["parent"] = {"key": parent_key}
     
     # Add labels if specified
-    if yaml_data.get('labels'):
-        payload["fields"]["labels"] = yaml_data['labels']
+    if json_data.get('labels'):
+        payload["fields"]["labels"] = json_data['labels']
     
     # Add priority if specified
-    if yaml_data.get('priority'):
-        payload["fields"]["priority"] = {"name": yaml_data['priority']}
+    if json_data.get('priority'):
+        payload["fields"]["priority"] = {"name": json_data['priority']}
     
     # Add story points for stories (if field exists in JIRA)
-    if issue_type == ISSUE_TYPE_STORY and yaml_data.get('story_points'):
+    if issue_type == ISSUE_TYPE_STORY and json_data.get('story_points'):
         # Note: Field name may vary by JIRA setup (customfield_XXXXX)
         # This is a common field name, may need customization
-        payload["fields"]["customfield_10016"] = yaml_data['story_points']
+        payload["fields"]["customfield_10016"] = json_data['story_points']
     
     # Add components if specified
-    if yaml_data.get('components'):
-        payload["fields"]["components"] = [{"name": comp} for comp in yaml_data['components']]
+    if json_data.get('components'):
+        payload["fields"]["components"] = [{"name": comp} for comp in json_data['components']]
+
+    # Add custom fields from template with enhanced field mapping
+    if json_data.get('custom_fields'):
+        field_mappings = get_field_mappings()
+        default_mappings = {
+            'business_value': 'customfield_10100',
+            'technical_complexity': 'customfield_10101', 
+            'category': 'customfield_10102',
+            'time_estimate': 'customfield_10103',
+            'epic_name': 'customfield_10011',
+            'epic_link': 'customfield_10014'
+        }
+        
+        # Merge default mappings with loaded mappings
+        all_mappings = {**default_mappings, **field_mappings}
+        
+        for field_name, field_value in json_data['custom_fields'].items():
+            if field_name in all_mappings and field_value:
+                jira_field_id = all_mappings[field_name]
+                payload["fields"][jira_field_id] = field_value
+                print(f"     🔧 Custom field: {field_name} -> {jira_field_id} = {field_value}")
+
+    # Add epic-specific fields for epic issues
+    if issue_type == ISSUE_TYPE_EPIC and json_data.get('epic_name'):
+        field_mappings = get_field_mappings()
+        epic_name_field = field_mappings.get('epic_name', 'customfield_10011')
+        payload["fields"][epic_name_field] = json_data['epic_name']
 
     url = f"{JIRA_URL}/rest/api/3/issue"
 
@@ -748,7 +830,7 @@ def create_issue_from_yaml(yaml_file_path, yaml_data):
         else:
             print(f"\n❌ ERROR: HTTP {response.status_code}")
             print(f"URL: {url}")
-            print(f"YAML: {yaml_file_path}")
+            print(f"JSON: {json_file_path}")
             print(f"Payload: {payload}")
             print(f"Response: {response.text[:500]}")
         response.raise_for_status()
@@ -757,9 +839,9 @@ def create_issue_from_yaml(yaml_file_path, yaml_data):
     issue_key = data.get('key')
     issue_url = f"{JIRA_URL}/browse/{issue_key}"
     
-    print(f"  ✅ Created {issue_type}: {issue_key} (YAML: {yaml_file_path.name})")
+    print(f"  ✅ Created {issue_type}: {issue_key} (JSON: {json_file_path.name})")
     print(f"     🔗 JIRA URL: {issue_url}")
-    print(f"     📋 GitHub: {yaml_data['description']['github_link']}")
+    print(f"     📋 GitHub: {json_data['description']['github_link']}")
 
     return data
 
@@ -814,7 +896,7 @@ def parse_markdown(file_path):
 
 def process_specs():
     
-    print(f"\n📁 Creating temp YAML directory: {TEMP_YAML_DIR}")
+    print(f"\n📁 Creating temp JSON directory: {TEMP_JSON_DIR}")
     
     # First, identify and log all specs that will be processed
     print(f"\n🔍 IDENTIFYING SPECS FOR JIRA GENERATION")
@@ -854,7 +936,7 @@ def process_specs():
     epic_count = 0
     story_count = 0
     task_count = 0
-    yaml_files_created = []
+    json_files_created = []
 
     try:
         # First pass: create epic from main spec.md
@@ -866,13 +948,13 @@ def process_specs():
 
             title, description, tasks = parse_markdown(file)
             
-            # Create YAML for epic
-            yaml_file, yaml_data = create_yaml_for_item(
+            # Create JSON for epic
+            json_file, json_data = create_json_for_item(
                 title, description, file, ISSUE_TYPE_EPIC
             )
-            yaml_files_created.append(yaml_file)
+            json_files_created.append(json_file)
 
-            result = create_issue_from_yaml(yaml_file, yaml_data)
+            result = create_issue_from_json(json_file, json_data)
 
             epic_key = result.get("key")
             epic_count += 1
@@ -890,13 +972,13 @@ def process_specs():
 
             title, description, tasks = parse_markdown(file)
             
-            # Create YAML for story
-            yaml_file, yaml_data = create_yaml_for_item(
+            # Create JSON for story
+            json_file, json_data = create_json_for_item(
                 title, description, file, ISSUE_TYPE_STORY, epic_key
             )
-            yaml_files_created.append(yaml_file)
+            json_files_created.append(json_file)
 
-            result = create_issue_from_yaml(yaml_file, yaml_data)
+            result = create_issue_from_json(json_file, json_data)
 
             story_key = result.get("key")
             story_count += 1
@@ -927,7 +1009,7 @@ def process_specs():
                         time_estimate = "1h"
                     
                     # Structured task with title and description
-                    task_yaml_file, task_yaml_data = create_yaml_for_item(
+                    task_json_file, task_json_data = create_json_for_item(
                         task_title, task_desc, file, "Task", None,  # No parent - flat structure
                         category=task_category, time_estimate=time_estimate
                     )
@@ -939,13 +1021,13 @@ def process_specs():
                     if any(keyword in task_title.lower() for keyword in ['test', 'testing']):
                         task_category = "testing"
                     
-                    task_yaml_file, task_yaml_data = create_yaml_for_item(
+                    task_json_file, task_json_data = create_json_for_item(
                         task_title, task_title, file, "Task", None,  # No parent - flat structure
                         category=task_category, time_estimate="2h"
                     )
                 
-                yaml_files_created.append(task_yaml_file)
-                create_issue_from_yaml(task_yaml_file, task_yaml_data)
+                json_files_created.append(task_json_file)
+                create_issue_from_json(task_json_file, task_json_data)
                 task_count += 1
 
         # Print summary
@@ -955,14 +1037,14 @@ def process_specs():
         print(f"  Epics created:     {epic_count}")
         print(f"  Stories created:   {story_count}")
         print(f"  Subtasks created:  {task_count}")
-        print(f"  YAML files:        {len(yaml_files_created)}")
+        print(f"  JSON files:        {len(json_files_created)}")
         print(f"  TOTAL ISSUES:      {epic_count + story_count + task_count}")
-        print(f"  TEMP YAML DIR:     {TEMP_YAML_DIR}")
+        print(f"  TEMP JSON DIR:     {TEMP_JSON_DIR}")
         print("="*60)
         
         if not DRY_RUN:
-            print(f"\n💡 YAML files preserved for debugging in: {TEMP_YAML_DIR}")
-            print(f"   Remove with: rm -rf {TEMP_YAML_DIR}")
+            print(f"\n💡 JSON files preserved for debugging in: {TEMP_JSON_DIR}")
+            print(f"   Remove with: rm -rf {TEMP_JSON_DIR}")
     
     except Exception as e:
         print(f"\n❌ ERROR during processing: {e}")
@@ -970,8 +1052,8 @@ def process_specs():
     finally:
         if DRY_RUN:
             # Clean up temp directory in dry run
-            print(f"\n🧹 Cleaning up temp directory: {TEMP_YAML_DIR}")
-            shutil.rmtree(TEMP_YAML_DIR, ignore_errors=True)
+            print(f"\n🧹 Cleaning up temp directory: {TEMP_JSON_DIR}")
+            shutil.rmtree(TEMP_JSON_DIR, ignore_errors=True)
 
 
 # ---------------------------------------
@@ -1058,8 +1140,9 @@ def main():
     # Declare global variables at the start of function
     global ISSUE_TYPE_STORY, ISSUE_TYPE_TASK, ISSUE_TYPE_BUG
 
-    print(f"\n🚀 STARTING JIRA SYNC")
+    print(f"\n🚀 STARTING JIRA SYNC (Enhanced JSON Mode)")
     print(f"   Mode: {'DRY RUN (Preview Only)' if DRY_RUN else 'LIVE MODE (Will Create Issues)'}")
+    print(f"   Format: JSON templates and data processing")
     
     # Perform early spec discovery for logging
     if SPEC_FOLDER.exists():
@@ -1136,7 +1219,7 @@ def main():
                 for fallback in fallbacks_applied:
                     print(f"   - {fallback}")
             
-            print(f"\n📄 Templates file: {TEMPLATE_DIR / 'templates.yaml'}")
+            print(f"\n📄 Templates file: {TEMPLATE_DIR / 'templates.json'}")
             
             # Final check for critical missing types
             still_missing = []
