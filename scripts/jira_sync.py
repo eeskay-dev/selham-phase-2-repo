@@ -90,7 +90,10 @@ if not DRY_RUN:
 
 auth = (EMAIL, TOKEN)
 
-SPEC_FOLDER = Path("specs")
+# Determine the repository root directory
+SCRIPT_DIR = Path(__file__).parent
+REPO_ROOT = SCRIPT_DIR.parent  # Go up one level from scripts/ to repo root
+SPEC_FOLDER = REPO_ROOT / "specs"
 TEMP_YAML_DIR = Path(tempfile.mkdtemp(prefix="jira_sync_"))
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -514,8 +517,12 @@ def load_template(issue_type):
 def create_yaml_for_item(title, description, file_path, issue_type, parent_key=None, **kwargs):
     """Create a JIRA item YAML file from unified template"""
     
-    # Generate GitHub link
-    relative_path = file_path.relative_to(Path.cwd()) if file_path.is_absolute() else file_path
+    # Generate GitHub link - use relative path from repository root
+    try:
+        relative_path = file_path.relative_to(REPO_ROOT) if file_path.is_absolute() else file_path
+    except ValueError:
+        # Fallback if path is not within repo root
+        relative_path = file_path.name
     github_link = f"{GITHUB_REPO_URL}/blob/{GITHUB_BRANCH}/{relative_path}"
     
     print(f"   🔗 Generated GitHub Link: {github_link}")
