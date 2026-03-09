@@ -502,6 +502,8 @@ def create_yaml_for_item(title, description, file_path, issue_type, parent_key=N
     relative_path = file_path.relative_to(Path.cwd()) if file_path.is_absolute() else file_path
     github_link = f"{GITHUB_REPO_URL}/blob/{GITHUB_BRANCH}/{relative_path}"
     
+    print(f"   🔗 Generated GitHub Link: {github_link}")
+    
     # Load template data (cached)
     template_data = get_cached_template(issue_type)
     
@@ -593,8 +595,10 @@ def yaml_to_adf_description(yaml_data):
     """Convert YAML data to ADF description with GitHub link"""
     desc = yaml_data['description']
     
-    # Create enhanced description with GitHub link
-    enhanced_description = f"""**Source File:** [{desc['source_file']}]({desc['github_link']})
+    # Create enhanced description with prominent GitHub link
+    enhanced_description = f"""**📋 Specification Source**
+
+🔗 **GitHub:** [{desc['source_file']}]({desc['github_link']})
 
 ---
 
@@ -643,6 +647,7 @@ def create_issue_from_yaml(yaml_file_path, yaml_data):
         print("TYPE     :", issue_type)
         print("TITLE    :", summary)
         print("GITHUB   :", yaml_data['description']['github_link'])
+        print("SOURCE   :", yaml_data['description']['source_file'])
         print("LABELS   :", yaml_data.get('labels', []))
         print("PRIORITY :", yaml_data.get('priority', 'Medium'))
         if yaml_data.get('severity'):
@@ -707,7 +712,12 @@ def create_issue_from_yaml(yaml_file_path, yaml_data):
         response.raise_for_status()
 
     data = response.json()
-    print(f"  ✅ Created {issue_type}: {data.get('key')} (YAML: {yaml_file_path.name})")
+    issue_key = data.get('key')
+    issue_url = f"{JIRA_URL}/browse/{issue_key}"
+    
+    print(f"  ✅ Created {issue_type}: {issue_key} (YAML: {yaml_file_path.name})")
+    print(f"     🔗 JIRA URL: {issue_url}")
+    print(f"     📋 GitHub: {yaml_data['description']['github_link']}")
 
     return data
 
@@ -775,6 +785,8 @@ def process_specs():
         for file in sorted(SPEC_FOLDER.glob("**/spec.md")):
 
             print(f"\n📋 Processing EPIC: {file}")
+            print(f"   📍 Spec Location: {file.absolute()}")
+            print(f"   🔗 GitHub Source: {GITHUB_REPO_URL}/blob/{GITHUB_BRANCH}/{file}")
 
             title, description, tasks = parse_markdown(file)
             
@@ -797,6 +809,8 @@ def process_specs():
                 continue
 
             print(f"\n📄 Processing STORY: {file}")
+            print(f"   📍 Spec Location: {file.absolute()}")
+            print(f"   🔗 GitHub Source: {GITHUB_REPO_URL}/blob/{GITHUB_BRANCH}/{file}")
 
             title, description, tasks = parse_markdown(file)
             
