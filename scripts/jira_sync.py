@@ -727,11 +727,30 @@ def create_issue_from_yaml(yaml_file_path, yaml_data):
     )
 
     if not response.ok:
-        print(f"\n❌ ERROR: HTTP {response.status_code}")
-        print(f"URL: {url}")
-        print(f"YAML: {yaml_file_path}")
-        print(f"Payload: {payload}")
-        print(f"Response: {response.text[:500]}")
+        if response.status_code == 401:
+            print(f"\n❌ ERROR: HTTP 401 - Unauthorized")
+            print(f"🔑 JIRA Authentication Issue:")
+            print(f"   - Check that JIRA_EMAIL is correct: {EMAIL}")
+            print(f"   - Check that JIRA_TOKEN is valid and not expired")
+            print(f"   - Verify you have permission to create issues in project: {PROJECT}")
+            print(f"   - Token should be an API token from: https://id.atlassian.com/manage-profile/security/api-tokens")
+            try:
+                error_response = response.json()
+                if "errorMessages" in error_response:
+                    print(f"   - JIRA Error: {', '.join(error_response['errorMessages'])}")
+            except:
+                pass
+            print(f"\n💡 TROUBLESHOOTING STEPS:")
+            print(f"   1. Go to your JIRA project settings")
+            print(f"   2. Check 'Project permissions' under 'Project settings'")
+            print(f"   3. Ensure your user has 'Create Issues' permission")
+            print(f"   4. If using API token, regenerate it and update JIRA_TOKEN")
+        else:
+            print(f"\n❌ ERROR: HTTP {response.status_code}")
+            print(f"URL: {url}")
+            print(f"YAML: {yaml_file_path}")
+            print(f"Payload: {payload}")
+            print(f"Response: {response.text[:500]}")
         response.raise_for_status()
 
     data = response.json()
