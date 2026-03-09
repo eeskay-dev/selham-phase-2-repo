@@ -134,6 +134,58 @@ def get_field_mappings():
     
     return _field_mapping_cache
 
+def get_available_fields(project_key, issue_type_name):
+    """Get available fields for a specific project and issue type"""
+    url = f"{JIRA_URL}/rest/api/3/issue/createmeta?projectKeys={project_key}&issuetypeNames={issue_type_name}&expand=projects.issuetypes.fields"
+    
+    try:
+        response = requests.get(url, auth=auth, headers={"Content-Type": "application/json"})
+        if response.ok:
+            data = response.json()
+            if data.get("projects") and len(data["projects"]) > 0:
+                project = data["projects"][0]
+                if project.get("issuetypes") and len(project["issuetypes"]) > 0:
+                    issue_type = project["issuetypes"][0]
+                    return list(issue_type.get("fields", {}).keys())
+    except Exception as e:
+        print(f"⚠️  Warning: Could not fetch available fields: {e}")
+    
+    return []
+
+def validate_custom_fields(json_data, available_fields=None):
+    """Validate and filter custom fields that are actually available in JIRA"""
+    if not json_data.get('custom_fields') or available_fields is None:
+        return {}
+    
+    field_mappings = get_field_mappings()
+    default_mappings = {
+        'business_value': 'customfield_10100',
+        'technical_complexity': 'customfield_10101', 
+        'category': 'customfield_10102',
+        'time_estimate': 'customfield_10103',
+        'epic_name': 'customfield_10011',
+        'epic_link': 'customfield_10014'
+    }
+    
+    # Merge default mappings with loaded mappings
+    all_mappings = {**default_mappings, **field_mappings}
+    
+    valid_fields = {}
+    skipped_fields = []
+    
+    for field_name, field_value in json_data['custom_fields'].items():
+        if field_name in all_mappings and field_value:
+            jira_field_id = all_mappings[field_name]
+            if jira_field_id in available_fields:
+                valid_fields[jira_field_id] = field_value
+            else:
+                skipped_fields.append(f"{field_name} ({jira_field_id})")
+    
+    if skipped_fields:
+        print(f"     ⚠️  Skipped unavailable custom fields: {', '.join(skipped_fields)}")
+    
+    return valid_fields
+
 def get_default_values():
     """Load default values from templates.json"""
     templates_file = TEMPLATE_DIR / "templates.json"
@@ -737,6 +789,10 @@ def create_issue_from_json(json_file_path, json_data):
         print("---------------")
         return {"key": "DRYRUN"}
 
+    # Get available fields for this project and issue type to validate custom fields
+    available_fields = get_available_fields(PROJECT, issue_type)
+    print(f"     🔍 Available fields fetched: {len(available_fields)} fields")
+
     # Convert JSON description to ADF with GitHub link
     adf_description = json_to_adf_description(json_data)
 
@@ -772,32 +828,21 @@ def create_issue_from_json(json_file_path, json_data):
     if json_data.get('components'):
         payload["fields"]["components"] = [{"name": comp} for comp in json_data['components']]
 
-    # Add custom fields from template with enhanced field mapping
-    if json_data.get('custom_fields'):
-        field_mappings = get_field_mappings()
-        default_mappings = {
-            'business_value': 'customfield_10100',
-            'technical_complexity': 'customfield_10101', 
-            'category': 'customfield_10102',
-            'time_estimate': 'customfield_10103',
-            'epic_name': 'customfield_10011',
-            'epic_link': 'customfield_10014'
-        }
-        
-        # Merge default mappings with loaded mappings
-        all_mappings = {**default_mappings, **field_mappings}
-        
-        for field_name, field_value in json_data['custom_fields'].items():
-            if field_name in all_mappings and field_value:
-                jira_field_id = all_mappings[field_name]
-                payload["fields"][jira_field_id] = field_value
-                print(f"     🔧 Custom field: {field_name} -> {jira_field_id} = {field_value}")
+    # Add validated custom fields (only those available in JIRA)
+    valid_custom_fields = validate_custom_fields(json_data, available_fields)
+    for field_id, field_value in valid_custom_fields.items():
+        payload["fields"][field_id] = field_value
+        print(f"     🔧 Added custom field: {field_id} = {field_value}")
 
-    # Add epic-specific fields for epic issues
+    # Handle epic-specific fields with validation
     if issue_type == ISSUE_TYPE_EPIC and json_data.get('epic_name'):
         field_mappings = get_field_mappings()
         epic_name_field = field_mappings.get('epic_name', 'customfield_10011')
-        payload["fields"][epic_name_field] = json_data['epic_name']
+        if epic_name_field in available_fields:
+            payload["fields"][epic_name_field] = json_data['epic_name']
+            print(f"     🏆 Added epic name: {epic_name_field} = {json_data['epic_name']}")
+        else:
+            print(f"     ⚠️  Epic name field not available: {epic_name_field}")
 
     url = f"{JIRA_URL}/rest/api/3/issue"
 
@@ -816,24 +861,37 @@ def create_issue_from_json(json_file_path, json_data):
             print(f"   - Check that JIRA_TOKEN is valid and not expired")
             print(f"   - Verify you have permission to create issues in project: {PROJECT}")
             print(f"   - Token should be an API token from: https://id.atlassian.com/manage-profile/security/api-tokens")
+        elif response.status_code == 400:
+            print(f"\n❌ ERROR: HTTP 400 - Bad Request")
+            print(f"🔧 JIRA Configuration Issue:")
             try:
                 error_response = response.json()
+                if "errors" in error_response:
+                    print(f"   Field Errors:")
+                    for field, error in error_response["errors"].items():
+                        print(f"   - {field}: {error}")
+                        if field.startswith('customfield_'):
+                            print(f"     💡 This custom field may not exist or be configured for this project")
                 if "errorMessages" in error_response:
-                    print(f"   - JIRA Error: {', '.join(error_response['errorMessages'])}")
+                    print(f"   General Errors: {', '.join(error_response['errorMessages'])}")
             except:
-                pass
-            print(f"\n💡 TROUBLESHOOTING STEPS:")
-            print(f"   1. Go to your JIRA project settings")
-            print(f"   2. Check 'Project permissions' under 'Project settings'")
-            print(f"   3. Ensure your user has 'Create Issues' permission")
-            print(f"   4. If using API token, regenerate it and update JIRA_TOKEN")
+                print(f"   Raw response: {response.text[:500]}")
+            print(f"\n💡 TROUBLESHOOTING:")
+            print(f"   - Check JIRA project configuration")
+            print(f"   - Verify custom fields exist and are on appropriate screens")
+            print(f"   - Use JIRA admin to check field permissions")
         else:
             print(f"\n❌ ERROR: HTTP {response.status_code}")
             print(f"URL: {url}")
             print(f"JSON: {json_file_path}")
-            print(f"Payload: {payload}")
-            print(f"Response: {response.text[:500]}")
-        response.raise_for_status()
+            try:
+                error_response = response.json()
+                print(f"Response: {error_response}")
+            except:
+                print(f"Response: {response.text[:500]}")
+        
+        # Don't raise exception, return error info instead
+        return {"key": "ERROR", "status_code": response.status_code, "error": response.text[:500]}
 
     data = response.json()
     issue_key = data.get('key')
@@ -937,6 +995,8 @@ def process_specs():
     story_count = 0
     task_count = 0
     json_files_created = []
+    error_count = 0
+    errors_details = []
 
     try:
         # First pass: create epic from main spec.md
@@ -956,8 +1016,13 @@ def process_specs():
 
             result = create_issue_from_json(json_file, json_data)
 
-            epic_key = result.get("key")
-            epic_count += 1
+            if result.get("key") == "ERROR":
+                error_count += 1
+                errors_details.append(f"Epic: {title} - {result.get('error', 'Unknown error')}")
+                print(f"  ❌ Failed to create epic, continuing with stories...")
+            else:
+                epic_key = result.get("key")
+                epic_count += 1
 
         # Second pass: create stories and tasks from other files
         for file in sorted(SPEC_FOLDER.glob("**/*.md")):
@@ -980,8 +1045,14 @@ def process_specs():
 
             result = create_issue_from_json(json_file, json_data)
 
-            story_key = result.get("key")
-            story_count += 1
+            if result.get("key") == "ERROR":
+                error_count += 1
+                errors_details.append(f"Story: {title} - {result.get('error', 'Unknown error')}")
+                print(f"  ❌ Failed to create story, continuing with tasks...")
+                story_key = None
+            else:
+                story_key = result.get("key")
+                story_count += 1
 
             # create subtasks
             for task in tasks:
@@ -1027,8 +1098,13 @@ def process_specs():
                     )
                 
                 json_files_created.append(task_json_file)
-                create_issue_from_json(task_json_file, task_json_data)
-                task_count += 1
+                result = create_issue_from_json(task_json_file, task_json_data)
+                
+                if result.get("key") == "ERROR":
+                    error_count += 1
+                    errors_details.append(f"Task: {task_title} - {result.get('error', 'Unknown error')}")
+                else:
+                    task_count += 1
 
         # Print summary
         print("\n" + "="*60)
@@ -1038,9 +1114,20 @@ def process_specs():
         print(f"  Stories created:   {story_count}")
         print(f"  Subtasks created:  {task_count}")
         print(f"  JSON files:        {len(json_files_created)}")
+        print(f"  Errors encountered: {error_count}")
+        print(f"  SUCCESS RATE:      {((epic_count + story_count + task_count) / max(1, epic_count + story_count + task_count + error_count) * 100):.1f}%")
         print(f"  TOTAL ISSUES:      {epic_count + story_count + task_count}")
         print(f"  TEMP JSON DIR:     {TEMP_JSON_DIR}")
         print("="*60)
+        
+        if error_count > 0:
+            print(f"\n⚠️  ERRORS SUMMARY ({error_count} failures):")
+            for i, error in enumerate(errors_details[:5], 1):  # Show first 5 errors
+                print(f"   {i}. {error[:100]}..." if len(error) > 100 else f"   {i}. {error}")
+            if len(errors_details) > 5:
+                print(f"   ... and {len(errors_details) - 5} more errors")
+            print(f"\n💡 Most errors are likely due to custom field configuration.")
+            print(f"   Consider updating the JSON templates to match your JIRA setup.")
         
         if not DRY_RUN:
             print(f"\n💡 JSON files preserved for debugging in: {TEMP_JSON_DIR}")

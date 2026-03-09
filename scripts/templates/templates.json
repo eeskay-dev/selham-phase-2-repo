@@ -14,13 +14,7 @@
         "auto-generated"
       ],
       "priority": "High",
-      "epic_name": "{EPIC_NAME}",
-      "epic_description": "{EPIC_DESCRIPTION}",
-      "components": [],
-      "custom_fields": {
-        "business_value": "High",
-        "technical_complexity": "Medium"
-      }
+      "components": []
     },
     "story": {
       "summary": "{SUMMARY}",
@@ -37,13 +31,7 @@
         "auto-generated"
       ],
       "priority": "Medium",
-      "story_points": 5,
-      "acceptance_criteria": "{ACCEPTANCE_CRITERIA}",
-      "components": [],
-      "custom_fields": {
-        "category": "{CATEGORY}",
-        "time_estimate": "{TIME_ESTIMATE}"
-      }
+      "components": []
     },
     "task": {
       "summary": "{SUMMARY}",
@@ -60,12 +48,7 @@
         "auto-generated"
       ],
       "priority": "Medium",
-      "components": [],
-      "custom_fields": {
-        "category": "{CATEGORY}",
-        "time_estimate": "{TIME_ESTIMATE}",
-        "complexity": "Medium"
-      }
+      "components": []
     },
     "subtask": {
       "summary": "{SUMMARY}",
@@ -82,11 +65,7 @@
         "auto-generated"
       ],
       "priority": "Medium",
-      "components": [],
-      "custom_fields": {
-        "category": "{CATEGORY}",
-        "time_estimate": "{TIME_ESTIMATE}"
-      }
+      "components": []
     },
     "bug": {
       "summary": "{SUMMARY}",
@@ -104,14 +83,7 @@
       "priority": "High",
       "severity": "{SEVERITY}",
       "environment": "{ENVIRONMENT}",
-      "steps_to_reproduce": "{STEPS_TO_REPRODUCE}",
-      "expected_behavior": "{EXPECTED_BEHAVIOR}",
-      "actual_behavior": "{ACTUAL_BEHAVIOR}",
-      "components": [],
-      "custom_fields": {
-        "found_in_version": "current",
-        "reproducibility": "Always"
-      }
+      "components": []
     }
   },
   "field_mappings": {
