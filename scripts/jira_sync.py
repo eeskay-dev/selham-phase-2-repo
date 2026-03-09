@@ -852,7 +852,11 @@ def json_to_adf_description(json_data):
     """Convert JSON data to ADF description with enhanced GitHub link formatting"""
     desc = json_data['description']
     
-    # Create enhanced description with proper ADF structure
+    # Get content ADF
+    content_adf = markdown_to_adf(desc['content'])
+    content_blocks = content_adf.get("content", [])
+    
+    # Build complete ADF with info panel
     return {
         "version": 1,
         "type": "doc", 
@@ -894,9 +898,8 @@ def json_to_adf_description(json_data):
             },
             {
                 "type": "rule"
-            },
-            *markdown_to_adf(desc['content'])["content"]
-        ]
+            }
+        ] + content_blocks
     }
 
 
