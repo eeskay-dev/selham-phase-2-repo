@@ -121,13 +121,17 @@ def prefetch_project_fields(project_key):
     global _global_field_cache
     
     if project_key in _global_field_cache:
+        print(f"✅ Using cached fields for project {project_key}")
         return _global_field_cache[project_key]
     
     print(f"🔍 Pre-fetching JIRA fields for project {project_key}...")
     
     try:
         url = f"{JIRA_URL}/rest/api/3/issue/createmeta?projectKeys={project_key}&expand=projects.issuetypes.fields"
+        print(f"   API URL: {url}")
+        
         response = requests.get(url, auth=auth, headers={"Content-Type": "application/json"}, timeout=15)
+        print(f"   Response status: {response.status_code}")
         
         if response.ok:
             data = response.json()
@@ -148,11 +152,18 @@ def prefetch_project_fields(project_key):
             total_fields = sum(len(fields) for fields in project_fields.values())
             print(f"✅ Cached {len(project_fields)} issue types with {total_fields} total field mappings")
             return project_fields
+        else:
+            print(f"⚠️  API returned {response.status_code}: {response.text[:200]}")
             
+    except requests.exceptions.Timeout:
+        print(f"⚠️  Timeout fetching project fields (15s limit exceeded)")
+    except requests.exceptions.ConnectionError as e:
+        print(f"⚠️  Connection error: {e}")
     except Exception as e:
-        print(f"⚠️  Warning: Could not pre-fetch project fields: {e}")
+        print(f"⚠️  Error fetching project fields: {e}")
     
     _global_field_cache[project_key] = {}
+    print(f"❌ Using empty field cache for {project_key}")
     return {}
 
 def get_cached_fields_for_type(project_key, issue_type_name):
@@ -220,13 +231,35 @@ def markdown_to_adf(text):
             }]
         }
     
+    print(f"     🔍 Processing markdown ({len(text)} chars)...")
+    
+    # Prevent processing extremely long text to avoid hanging
+    if len(text) > 50000:
+        print(f"     ⚠️  Text too long ({len(text)} chars), truncating to 50,000...")
+        text = text[:50000] + "\n\n[Content truncated due to length...]"
+    
     adf_content = []
     lines = text.split('\n')
+    total_lines = len(lines)
     i = 0
+    max_iterations = total_lines * 3  # Safety limit
+    iteration_count = 0
     
-    while i < len(lines):
+    print(f"     📄 Processing {total_lines} lines...")
+    
+    while i < len(lines) and iteration_count < max_iterations:
+        iteration_count += 1
         line = lines[i]
         stripped = line.strip()
+        
+        # Progress indicator for long processing
+        if iteration_count % 100 == 0:
+            print(f"     ⏳ Progress: line {i}/{total_lines} (iteration {iteration_count})")
+        
+        # Safety break if we're in an infinite loop
+        if iteration_count >= max_iterations - 10:
+            print(f"     ⚠️  Markdown parsing taking too long, breaking at line {i}/{total_lines}")
+            break
         
         # Skip empty lines between blocks
         if not stripped:
@@ -466,11 +499,26 @@ def parse_inline_markdown(text):
     if not text:
         return [{"type": "text", "text": ""}]
     
+    # Safety limit for very long text
+    if len(text) > 10000:
+        print(f"       ⚠️  Inline text too long ({len(text)} chars), truncating...")
+        return [{"type": "text", "text": text[:10000] + "[truncated]"}]
+    
     content = []
     i = 0
     current_text = ""
+    max_iterations = len(text) * 2  # Safety limit
+    iteration_count = 0
     
-    while i < len(text):
+    while i < len(text) and iteration_count < max_iterations:
+        iteration_count += 1
+        
+        # Safety break if we're in an infinite loop
+        if iteration_count >= max_iterations - 10:
+            print(f"       ⚠️  Inline parsing taking too long, breaking at position {i}/{len(text)}")
+            if current_text:
+                content.append({"type": "text", "text": current_text})
+            break
         # Bold (**text** or __text__)
         if text[i:i+2] in ('**', '__'):
             if current_text:
@@ -859,14 +907,38 @@ def create_json_for_item(title, description, file_path, issue_type, parent_key=N
 
 def json_to_adf_description(json_data):
     """Convert JSON data to ADF description with enhanced GitHub link formatting"""
+    print(f"   🔧 Starting ADF conversion...")
     desc = json_data['description']
     
-    # Get content ADF
-    content_adf = markdown_to_adf(desc['content'])
-    content_blocks = content_adf.get("content", [])
+    # Get content ADF with logging
+    print(f"   📝 Converting markdown content (length: {len(desc['content'])} chars)...")
+    
+    # For very large content, use simple fallback to prevent hanging
+    if len(desc['content']) > 15000:
+        print(f"   ⚡ Large content detected ({len(desc['content'])} chars), using simple conversion...")
+        content_blocks = [{
+            "type": "paragraph",
+            "content": [{"type": "text", "text": desc['content'][:15000] + "\n\n[Content truncated - see GitHub link above for full specification]"}]
+        }]
+        print(f"   ✅ Simple conversion completed (1 block with truncation)")
+    else:
+        try:
+            content_adf = markdown_to_adf(desc['content'])
+            content_blocks = content_adf.get("content", [])
+            print(f"   ✅ ADF conversion completed ({len(content_blocks)} blocks)")
+        except Exception as e:
+            print(f"   ❌ ADF conversion failed: {e}")
+            # Fallback to simple text
+            content_blocks = [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": desc['content'][:5000]}]
+            }]
+            print(f"   🔄 Using fallback content (truncated to 5000 chars)")
+    
+    print(f"   🔨 Building final ADF structure...")
     
     # Build complete ADF with info panel
-    return {
+    result = {
         "version": 1,
         "type": "doc", 
         "content": [
@@ -910,6 +982,9 @@ def json_to_adf_description(json_data):
             }
         ] + content_blocks
     }
+    
+    print(f"   ✅ ADF description ready ({len(result['content'])} total blocks)")
+    return result
 
 
 def get_project_issue_types():
@@ -963,6 +1038,8 @@ def validate_json_structure(json_data, json_file_path):
 def create_issue_from_json(json_file_path, json_data):
     """Create JIRA issue from template-based JSON data"""
     
+    print(f"🔄 Creating JIRA issue from {json_file_path.name}...")
+    
     # Validate JSON structure first
     if not validate_json_structure(json_data, json_file_path):
         print(f"❌ ERROR: Invalid JSON structure in {json_file_path.name}")
@@ -985,7 +1062,11 @@ def create_issue_from_json(json_file_path, json_data):
         print("---------------")
         return {"key": "DRYRUN"}
 
+    print(f"   📋 Issue: {summary[:50]}...")
+    print(f"   🏷️  Type: {issue_type}")
+    
     # Convert JSON description to ADF with GitHub link
+    print(f"   📝 Converting description to ADF...")
     adf_description = json_to_adf_description(json_data)
 
     # Build JIRA payload from JSON data
@@ -1038,33 +1119,79 @@ def create_issue_from_json(json_file_path, json_data):
             payload["fields"][story_field] = json_data['story_points']
 
     url = f"{JIRA_URL}/rest/api/3/issue"
+    print(f"   🌐 Making API request to: {url}")
+    print(f"   📦 Payload size: {len(str(payload))} characters")
 
-    response = requests.post(
-        url,
-        json=payload,
-        auth=auth,
-        headers={"Content-Type": "application/json"},
-        timeout=20
-    )
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            auth=auth,
+            headers={"Content-Type": "application/json"},
+            timeout=20
+        )
+        print(f"   📡 Response received: {response.status_code}")
+        
+    except requests.exceptions.Timeout:
+        print(f"   ⏰ Request timeout after 20 seconds")
+        return {"key": "ERROR", "error": "Timeout"}
+    except requests.exceptions.ConnectionError as e:
+        print(f"   🔌 Connection error: {e}")
+        return {"key": "ERROR", "error": f"Connection: {e}"}
+    except Exception as e:
+        print(f"   ❌ Request error: {e}")
+        return {"key": "ERROR", "error": f"Request: {e}"}
     
     # Add small delay to avoid JIRA throttling
     time.sleep(0.5)
 
     if not response.ok:
         error_info = {"key": "ERROR", "status_code": response.status_code}
-        if response.status_code == 400:
-            print(f"⚠️  Field validation error for {issue_type}: {summary[:50]}...")
-            try:
+        
+        # Get detailed error information from JIRA response
+        error_details = "HTTP Error"
+        try:
+            if response.text:
                 error_data = response.json()
                 if "errors" in error_data:
-                    field_errors = list(error_data["errors"].keys())[:3]  # Show first 3
-                    print(f"   Problem fields: {', '.join(field_errors)}")
-            except:
-                pass
+                    # Field-specific errors
+                    field_errors = []
+                    for field, message in error_data["errors"].items():
+                        field_errors.append(f"{field}: {message}")
+                    error_details = "; ".join(field_errors)
+                elif "errorMessages" in error_data:
+                    # General error messages
+                    error_details = "; ".join(error_data["errorMessages"])
+                elif error_data.get("message"):
+                    # Single error message
+                    error_details = error_data["message"]
+                else:
+                    # Raw error data
+                    error_details = str(error_data)[:200]
+            else:
+                error_details = f"HTTP {response.status_code} - No response body"
+        except Exception as e:
+            # If we can't parse JSON, use raw response text
+            error_details = response.text[:200] if response.text else f"HTTP {response.status_code} - Empty response"
+        
+        error_info["error"] = error_details
+        
+        # Log specific error details
+        if response.status_code == 400:
+            print(f"❌ Field validation error for {issue_type}: {summary[:50]}...")
+            print(f"   Details: {error_details}")
         elif response.status_code == 401:
             print(f"❌ Authentication error - check JIRA credentials")
+            print(f"   Details: {error_details}")
+        elif response.status_code == 403:
+            print(f"❌ Permission denied - insufficient access rights")
+            print(f"   Details: {error_details}")
+        elif response.status_code == 404:
+            print(f"❌ Project or issue type not found")
+            print(f"   Details: {error_details}")
         else:
-            print(f"⚠️  HTTP {response.status_code} error for {issue_type}")
+            print(f"❌ HTTP {response.status_code} error for {issue_type}")
+            print(f"   Details: {error_details}")
         
         return error_info
 
@@ -1188,8 +1315,9 @@ def process_specs():
 
             if result.get("key") == "ERROR":
                 error_count += 1
-                errors_details.append(f"Epic: {title} - {result.get('error', 'Unknown error')}")
-                print(f"  ❌ Failed to create epic, continuing with stories...")
+                error_msg = result.get('error', 'Unknown error')
+                errors_details.append(f"Epic: {title} - {error_msg}")
+                print(f"  ❌ Failed to create epic: {error_msg}")
             else:
                 epic_key = result.get("key")
                 epic_count += 1
@@ -1215,8 +1343,9 @@ def process_specs():
 
             if result.get("key") == "ERROR":
                 error_count += 1
-                errors_details.append(f"Story: {title} - {result.get('error', 'Unknown error')}")
-                print(f"  ❌ Failed to create story, continuing with tasks...")
+                error_msg = result.get('error', 'Unknown error')
+                errors_details.append(f"Story: {title} - {error_msg}")
+                print(f"  ❌ Failed to create story: {error_msg}")
                 story_key = None
             else:
                 story_key = result.get("key")
@@ -1270,7 +1399,9 @@ def process_specs():
                 
                 if result.get("key") == "ERROR":
                     error_count += 1
-                    errors_details.append(f"Task: {task_title} - {result.get('error', 'Unknown error')}")
+                    error_msg = result.get('error', 'Unknown error')
+                    errors_details.append(f"Task: {task_title} - {error_msg}")
+                    print(f"  ❌ Failed to create task: {error_msg}")
                 else:
                     task_count += 1
 
@@ -1289,13 +1420,11 @@ def process_specs():
         print("="*60)
         
         if error_count > 0:
-            print(f"\n⚠️  ERRORS SUMMARY ({error_count} failures):")
-            for i, error in enumerate(errors_details[:5], 1):  # Show first 5 errors
-                print(f"   {i}. {error[:100]}..." if len(error) > 100 else f"   {i}. {error}")
-            if len(errors_details) > 5:
-                print(f"   ... and {len(errors_details) - 5} more errors")
-            print(f"\n💡 Most errors are likely due to custom field configuration.")
-            print(f"   Consider updating the JSON templates to match your JIRA setup.")
+            print(f"\n❌ DETAILED ERROR SUMMARY ({error_count} failures):")
+            for i, error in enumerate(errors_details, 1):
+                print(f"   {i}. {error}")
+            print(f"\n💡 Review error details above to fix JIRA configuration issues.")
+            print(f"   Common issues: missing custom fields, incorrect field types, permission errors.")
         
         if not DRY_RUN:
             print(f"\n💡 JSON files preserved for debugging in: {TEMP_JSON_DIR}")
@@ -1527,9 +1656,22 @@ def main():
         global auth
         auth = (EMAIL, TOKEN)
         
-        # Pre-fetch all project fields for performance
+        # Pre-fetch all project fields for performance (optional)
         if not DRY_RUN:
-            prefetch_project_fields(PROJECT)
+            try:
+                print(f"🔍 Testing JIRA connection...")
+                # Test connection first
+                test_url = f"{JIRA_URL}/rest/api/3/myself"
+                test_response = requests.get(test_url, auth=auth, timeout=10)
+                if test_response.ok:
+                    print(f"✅ JIRA connection successful")
+                    prefetch_project_fields(PROJECT)
+                else:
+                    print(f"⚠️  JIRA connection failed: {test_response.status_code}")
+                    print(f"   Continuing without field pre-fetching...")
+            except Exception as e:
+                print(f"⚠️  Could not pre-fetch fields: {e}")
+                print(f"   Continuing with basic field handling...")
 
     print(f"\n🚀 STARTING JIRA SYNC (Enhanced JSON Mode)")
     print(f"   Mode: {'DRY RUN (Preview Only)' if DRY_RUN else 'LIVE MODE (Will Create Issues)'}")
