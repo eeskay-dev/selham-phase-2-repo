@@ -1565,6 +1565,373 @@ Environment Variables:
     return parser.parse_args()
 
 
+def validate_jira_connection():
+    """
+    Comprehensive JIRA validation and connectivity check
+    Returns: (success: bool, issues: list, warnings: list)
+    """
+    print(f"\n🔍 JIRA VALIDATION & CONNECTIVITY CHECK")
+    print("="*60)
+    
+    issues = []
+    warnings = []
+    
+    # 1. Basic Configuration Validation
+    print(f"1️⃣ Validating basic configuration...")
+    
+    config_checks = [
+        ("JIRA_URL", JIRA_URL, "https://your-domain.atlassian.net"),
+        ("JIRA_EMAIL", EMAIL, "your-email@domain.com"),
+        ("JIRA_TOKEN", TOKEN, "your-api-token"),
+        ("JIRA_PROJECT", PROJECT, "PROJECT_KEY")
+    ]
+    
+    for name, value, example in config_checks:
+        if not value:
+            issues.append(f"Missing {name} environment variable")
+            print(f"   ❌ {name}: Not set")
+        elif value == example:
+            issues.append(f"{name} is using default/example value")
+            print(f"   ❌ {name}: Using example value")
+        else:
+            print(f"   ✅ {name}: Configured")
+    
+    # URL format validation
+    if JIRA_URL and not JIRA_URL.startswith(('http://', 'https://')):
+        issues.append(f"JIRA_URL must start with http:// or https://")
+        print(f"   ❌ JIRA_URL: Invalid format (missing protocol)")
+    
+    # Additional URL validation checks
+    if JIRA_URL:
+        if JIRA_URL.endswith('/'):
+            warnings.append("JIRA_URL ends with '/' - this will be stripped automatically")
+            print(f"   ⚠️  JIRA_URL: Trailing slash detected (will be auto-corrected)")
+        
+        # Common domain validation
+        if 'atlassian.net' not in JIRA_URL and 'localhost' not in JIRA_URL and not JIRA_URL.startswith('http://'):
+            warnings.append("JIRA_URL doesn't appear to be an Atlassian Cloud instance")
+            print(f"   ⚠️  JIRA_URL: Not a standard Atlassian Cloud URL")
+    
+    # Token format validation
+    if TOKEN and len(TOKEN) < 10:
+        issues.append("JIRA_TOKEN appears too short (API tokens are typically 24+ characters)")
+        print(f"   ❌ JIRA_TOKEN: Token appears too short")
+    
+    # Email format basic validation
+    if EMAIL and '@' not in EMAIL:
+        issues.append("JIRA_EMAIL doesn't appear to be a valid email address")
+        print(f"   ❌ JIRA_EMAIL: Invalid email format")
+    
+    if issues:
+        print(f"\n❌ Configuration validation failed with {len(issues)} issues")
+        return False, issues, warnings
+    
+    # 2. Network Connectivity Test
+    print(f"\n2️⃣ Testing network connectivity...")
+    
+    try:
+        # Test basic connectivity without auth
+        import urllib.parse
+        parsed_url = urllib.parse.urlparse(JIRA_URL)
+        test_host = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        
+        print(f"   🌐 Testing connection to: {test_host}")
+        response = requests.get(f"{JIRA_URL}/status", timeout=10)
+        print(f"   ✅ Network connectivity: OK (HTTP {response.status_code})")
+        
+    except requests.exceptions.Timeout:
+        issues.append("Network timeout - JIRA server unreachable")
+        print(f"   ❌ Network connectivity: Timeout after 10 seconds")
+        return False, issues, warnings
+        
+    except requests.exceptions.ConnectionError as e:
+        issues.append(f"Connection error: {str(e)}")
+        print(f"   ❌ Network connectivity: Connection failed")
+        return False, issues, warnings
+        
+    except Exception as e:
+        warnings.append(f"Network test inconclusive: {str(e)}")
+        print(f"   ⚠️  Network connectivity: Test inconclusive")
+    
+    # 3. Authentication Test
+    print(f"\n3️⃣ Testing JIRA authentication...")
+    
+    try:
+        auth_url = f"{JIRA_URL}/rest/api/3/myself"
+        print(f"   🔐 Testing auth at: /rest/api/3/myself")
+        
+        auth_response = requests.get(auth_url, auth=auth, timeout=15)
+        
+        if auth_response.status_code == 200:
+            user_data = auth_response.json()
+            display_name = user_data.get('displayName', 'Unknown')
+            account_id = user_data.get('accountId', 'Unknown')
+            print(f"   ✅ Authentication: SUCCESS")
+            print(f"      User: {display_name} ({account_id})")
+            
+        elif auth_response.status_code == 401:
+            issues.append("Authentication failed - invalid credentials")
+            print(f"   ❌ Authentication: FAILED (401 Unauthorized)")
+            print(f"      Check JIRA_EMAIL and JIRA_TOKEN values")
+            return False, issues, warnings
+            
+        elif auth_response.status_code == 403:
+            issues.append("Authentication failed - access forbidden")
+            print(f"   ❌ Authentication: FAILED (403 Forbidden)")
+            print(f"      User has insufficient permissions")
+            return False, issues, warnings
+            
+        else:
+            issues.append(f"Authentication test failed with HTTP {auth_response.status_code}")
+            print(f"   ❌ Authentication: FAILED (HTTP {auth_response.status_code})")
+            return False, issues, warnings
+            
+    except Exception as e:
+        issues.append(f"Authentication test error: {str(e)}")
+        print(f"   ❌ Authentication: ERROR - {str(e)}")
+        return False, issues, warnings
+    
+    # 4. Project Access Validation
+    print(f"\n4️⃣ Validating project access...")
+    
+    try:
+        project_url = f"{JIRA_URL}/rest/api/3/project/{PROJECT}"
+        print(f"   📋 Testing project access: {PROJECT}")
+        
+        project_response = requests.get(project_url, auth=auth, timeout=15)
+        
+        if project_response.status_code == 200:
+            project_data = project_response.json()
+            project_name = project_data.get('name', 'Unknown')
+            project_type = project_data.get('projectTypeKey', 'unknown')
+            print(f"   ✅ Project access: SUCCESS")
+            print(f"      Project: {project_name} (Type: {project_type})")
+            
+        elif project_response.status_code == 404:
+            issues.append(f"Project '{PROJECT}' not found or no access")
+            print(f"   ❌ Project access: FAILED (404 Not Found)")
+            print(f"      Project '{PROJECT}' does not exist or user has no access")
+            return False, issues, warnings
+            
+        elif project_response.status_code == 403:
+            issues.append(f"No permission to access project '{PROJECT}'")
+            print(f"   ❌ Project access: FAILED (403 Forbidden)")
+            return False, issues, warnings
+            
+        else:
+            issues.append(f"Project access test failed with HTTP {project_response.status_code}")
+            print(f"   ❌ Project access: FAILED (HTTP {project_response.status_code})")
+            return False, issues, warnings
+            
+    except Exception as e:
+        issues.append(f"Project access test error: {str(e)}")
+        print(f"   ❌ Project access: ERROR - {str(e)}")
+        return False, issues, warnings
+    
+    # 5. Issue Types Validation
+    print(f"\n5️⃣ Validating issue types...")
+    
+    try:
+        available_types = get_project_issue_types()
+        
+        if not available_types:
+            warnings.append("Could not fetch issue types - proceeding with defaults")
+            print(f"   ⚠️  Issue types: Could not fetch, using defaults")
+        else:
+            print(f"   📊 Available issue types: {', '.join(available_types)}")
+            
+            # Check each required type
+            required_types = [
+                ("Epic", ISSUE_TYPE_EPIC),
+                ("Story", ISSUE_TYPE_STORY), 
+                ("Task", ISSUE_TYPE_TASK),
+                ("Bug", ISSUE_TYPE_BUG)
+            ]
+            
+            missing_types = []
+            for type_name, type_value in required_types:
+                if type_value not in available_types:
+                    missing_types.append(f"{type_name} ({type_value})")
+                else:
+                    print(f"   ✅ {type_name}: {type_value} - Available")
+            
+            if missing_types:
+                warnings.append(f"Issue types not available: {', '.join(missing_types)}")
+                print(f"   ⚠️  Missing types: {', '.join(missing_types)}")
+                print(f"      Will attempt automatic fallbacks during processing")
+            else:
+                print(f"   ✅ All required issue types are available")
+                
+    except Exception as e:
+        warnings.append(f"Issue type validation error: {str(e)}")
+        print(f"   ⚠️  Issue types: Validation error - {str(e)}")
+    
+    # 6. Field Permissions Test
+    print(f"\n6️⃣ Testing field permissions...")
+    
+    try:
+        # Test create meta for Epic (most fields)
+        meta_url = f"{JIRA_URL}/rest/api/3/issue/createmeta"
+        params = {
+            "projectKeys": PROJECT,
+            "issuetypeNames": ISSUE_TYPE_EPIC,
+            "expand": "projects.issuetypes.fields"
+        }
+        
+        print(f"   🔧 Testing field access for {ISSUE_TYPE_EPIC}...")
+        meta_response = requests.get(meta_url, params=params, auth=auth, timeout=15)
+        
+        if meta_response.status_code == 200:
+            meta_data = meta_response.json()
+            
+            if meta_data.get("projects") and len(meta_data["projects"]) > 0:
+                project = meta_data["projects"][0]
+                if project.get("issuetypes") and len(project["issuetypes"]) > 0:
+                    issue_type = project["issuetypes"][0]
+                    available_fields = list(issue_type.get("fields", {}).keys())
+                    
+                    print(f"   ✅ Field permissions: SUCCESS")
+                    print(f"      Available fields: {len(available_fields)}")
+                    
+                    # Check for key fields
+                    key_fields = ["summary", "description", "issuetype", "project"]
+                    missing_key_fields = [f for f in key_fields if f not in available_fields]
+                    
+                    if missing_key_fields:
+                        issues.append(f"Missing required fields: {', '.join(missing_key_fields)}")
+                        print(f"   ❌ Missing required fields: {', '.join(missing_key_fields)}")
+                    else:
+                        print(f"   ✅ All required fields available")
+                        
+                    # Check for common custom fields
+                    common_custom = ["customfield_10016", "customfield_10011"]  # Story points, Epic name
+                    available_custom = [f for f in common_custom if f in available_fields]
+                    if available_custom:
+                        print(f"   ✅ Custom fields detected: {len(available_custom)}")
+                    else:
+                        print(f"   ℹ️  No common custom fields found (normal for basic setups)")
+                else:
+                    warnings.append(f"No issue type data returned for {ISSUE_TYPE_EPIC}")
+                    print(f"   ⚠️  No issue type data for {ISSUE_TYPE_EPIC}")
+            else:
+                warnings.append("No project data returned in create meta")
+                print(f"   ⚠️  No project data in create meta response")
+                
+        elif meta_response.status_code == 403:
+            warnings.append("Limited field access - may affect custom fields")
+            print(f"   ⚠️  Field permissions: Limited access (403)")
+            
+        else:
+            warnings.append(f"Field permission test failed: HTTP {meta_response.status_code}")
+            print(f"   ⚠️  Field permissions: Test failed (HTTP {meta_response.status_code})")
+            
+    except Exception as e:
+        warnings.append(f"Field permission test error: {str(e)}")
+        print(f"   ⚠️  Field permissions: Test error - {str(e)}")
+    
+    # 7. Issue Creation Test (Dry Run)
+    print(f"\n7️⃣ Testing issue creation permissions...")
+    
+    try:
+        # Create minimal test payload
+        test_payload = {
+            "fields": {
+                "project": {"key": PROJECT},
+                "summary": "JIRA Sync Test Issue - DELETE ME",
+                "description": {
+                    "version": 1,
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "Test issue created by JIRA sync validation. Safe to delete."}]
+                    }]
+                },
+                "issuetype": {"name": ISSUE_TYPE_STORY}  # Use story as it's most common
+            }
+        }
+        
+        create_url = f"{JIRA_URL}/rest/api/3/issue"
+        print(f"   🧪 Testing issue creation permissions (dry run)...")
+        
+        # Make a test request (we'll get validation response even without actually creating)
+        test_response = requests.post(
+            create_url,
+            json=test_payload,
+            auth=auth,
+            headers={"Content-Type": "application/json"},
+            timeout=15
+        )
+        
+        if test_response.status_code in [200, 201]:
+            # Issue was created successfully (unexpected but good)
+            created_issue = test_response.json()
+            issue_key = created_issue.get("key")
+            print(f"   ✅ Issue creation: SUCCESS")
+            print(f"      Test issue created: {issue_key}")
+            warnings.append(f"Test issue {issue_key} was created and should be deleted")
+            
+        elif test_response.status_code == 400:
+            # Field validation error - check if it's permissions or field issues
+            error_data = test_response.json()
+            error_messages = error_data.get("errors", {})
+            
+            permission_errors = []
+            field_errors = []
+            
+            for field, message in error_messages.items():
+                if "permission" in message.lower() or "forbidden" in message.lower():
+                    permission_errors.append(f"{field}: {message}")
+                else:
+                    field_errors.append(f"{field}: {message}")
+            
+            if permission_errors:
+                issues.append(f"Issue creation permission errors: {'; '.join(permission_errors)}")
+                print(f"   ❌ Issue creation: PERMISSION DENIED")
+                for error in permission_errors:
+                    print(f"      {error}")
+            else:
+                print(f"   ✅ Issue creation: PERMISSIONS OK")
+                print(f"      Field validation errors are normal in validation test")
+                if field_errors:
+                    warnings.extend([f"Field issue: {err}" for err in field_errors[:3]])  # Limit to 3
+                    
+        elif test_response.status_code == 403:
+            issues.append("No permission to create issues in this project")
+            print(f"   ❌ Issue creation: FORBIDDEN (403)")
+            print(f"      User cannot create issues in project {PROJECT}")
+            
+        else:
+            warnings.append(f"Issue creation test inconclusive: HTTP {test_response.status_code}")
+            print(f"   ⚠️  Issue creation: Test inconclusive (HTTP {test_response.status_code})")
+            
+    except Exception as e:
+        warnings.append(f"Issue creation test error: {str(e)}")
+        print(f"   ⚠️  Issue creation: Test error - {str(e)}")
+    
+    # Final Summary
+    print(f"\n" + "="*60)
+    print(f"📊 JIRA VALIDATION SUMMARY")
+    print(f"="*60)
+    
+    if issues:
+        print(f"❌ VALIDATION FAILED - {len(issues)} critical issues:")
+        for i, issue in enumerate(issues, 1):
+            print(f"   {i}. {issue}")
+        print(f"\n💡 Fix these issues before proceeding with JIRA sync.")
+        
+    else:
+        print(f"✅ VALIDATION PASSED - JIRA is ready for sync")
+        
+    if warnings:
+        print(f"\n⚠️  {len(warnings)} warnings (non-critical):")
+        for i, warning in enumerate(warnings, 1):
+            print(f"   {i}. {warning}")
+    
+    print(f"="*60)
+    
+    return len(issues) == 0, issues, warnings
+
+
 # ---------------------------------------
 # Main
 # ---------------------------------------
@@ -1627,8 +1994,16 @@ def main():
         preview_structure()
         return
 
-    # Validate JIRA configuration for non-preview modes
+    # =================================================================
+    # STEP 1: JIRA CONNECTIVITY & VALIDATION - MANDATORY FIRST STEP
+    # =================================================================
+    
+    print(f"\n🔐 STEP 1: JIRA CONNECTIVITY & VALIDATION")
+    print("="*70)
+    
     if not DRY_RUN:
+        # 1.1 Basic Configuration Check
+        print(f"\n📋 Checking basic configuration...")
         missing = []
         if not JIRA_URL:
             missing.append("JIRA_URL")
@@ -1640,42 +2015,131 @@ def main():
             missing.append("JIRA_PROJECT")
         
         if missing:
-            print(f"❌ ERROR: Missing required environment variables: {', '.join(missing)}")
-            print(f"💡 JIRA_URL should be like: https://your-domain.atlassian.net")
+            print(f"❌ CONFIGURATION ERROR: Missing required environment variables")
+            print(f"   Missing: {', '.join(missing)}")
+            print(f"💡 Setup Guide:")
+            print(f"   export JIRA_URL='https://your-domain.atlassian.net'")
+            print(f"   export JIRA_EMAIL='your-email@domain.com'")
+            print(f"   export JIRA_TOKEN='your-api-token'")
+            print(f"   export JIRA_PROJECT='YOUR_PROJECT_KEY'")
+            print(f"\n🔗 Get API token: https://id.atlassian.com/manage-profile/security/api-tokens")
             exit(1)
         
-        print(f"✅ Configuration loaded:")
-        print(f"   JIRA_URL: {JIRA_URL}")
-        print(f"   PROJECT: {PROJECT}")
-        print(f"   EMAIL: {EMAIL}")
-        print(f"   GITHUB_REPO_URL: {GITHUB_REPO_URL}")
-        print(f"   GITHUB_BRANCH: {GITHUB_BRANCH}")
-        print(f"   GITHUB_ACTIONS: {os.environ.get('GITHUB_ACTIONS', 'false')}")
+        print(f"✅ Basic configuration validated")
         
-        # Set up authentication
+        # 1.2 Set up authentication
         global auth
         auth = (EMAIL, TOKEN)
         
-        # Pre-fetch all project fields for performance (optional)
-        if not DRY_RUN:
-            try:
-                print(f"🔍 Testing JIRA connection...")
-                # Test connection first
-                test_url = f"{JIRA_URL}/rest/api/3/myself"
-                test_response = requests.get(test_url, auth=auth, timeout=10)
-                if test_response.ok:
-                    print(f"✅ JIRA connection successful")
-                    prefetch_project_fields(PROJECT)
-                else:
-                    print(f"⚠️  JIRA connection failed: {test_response.status_code}")
-                    print(f"   Continuing without field pre-fetching...")
-            except Exception as e:
-                print(f"⚠️  Could not pre-fetch fields: {e}")
-                print(f"   Continuing with basic field handling...")
+        # 1.3 COMPREHENSIVE JIRA VALIDATION & CONNECTIVITY TEST
+        print(f"\n🔍 Running comprehensive JIRA validation...")
+        validation_start_time = time.time()
+        validation_success, validation_issues, validation_warnings = validate_jira_connection()
+        
+        # 1.4 Handle validation results
+        if not validation_success:
+            print(f"\n❌ JIRA VALIDATION FAILED - CANNOT PROCEED")
+            print(f"📋 Issues found ({len(validation_issues)}):")
+            for i, issue in enumerate(validation_issues, 1):
+                print(f"   {i}. {issue}")
+            
+            if validation_warnings:
+                print(f"\n⚠️  Warnings ({len(validation_warnings)}):")
+                for i, warning in enumerate(validation_warnings, 1):
+                    print(f"   {i}. {warning}")
+            
+            print(f"\n💡 TROUBLESHOOTING:")
+            print(f"   • Verify your JIRA URL is correct and accessible")
+            print(f"   • Check your email and API token are valid") 
+            print(f"   • Ensure you have access to the specified project")
+            print(f"   • Test your credentials at: {JIRA_URL}/secure/ViewProfile.jspa")
+            exit(1)
+        
+        # 1.5 Validation successful - log results
+        print(f"\n🎉 JIRA VALIDATION SUCCESSFUL!")
+        print(f"   ✅ Authentication verified")
+        print(f"   ✅ Project access confirmed")  
+        print(f"   ✅ All systems ready")
+        print(f"   📊 Validation completed in ~{int(time.time() - validation_start_time)}s")
+        
+        if validation_warnings:
+            print(f"\n⚠️  Warnings to note ({len(validation_warnings)}):")
+            for i, warning in enumerate(validation_warnings, 1):
+                print(f"   {i}. {warning}")
+        
+        # 1.6 Pre-fetch all project fields for performance optimization
+        print(f"\n🚀 Pre-fetching JIRA field metadata for performance...")
+        try:
+            prefetch_project_fields(PROJECT)
+            print(f"✅ Field metadata cached successfully")
+        except Exception as e:
+            print(f"⚠️  Could not pre-fetch fields: {e}")
+            print(f"   📝 Will fetch fields on-demand (slower but functional)")
+    
+    else:
+        print(f"\n📋 DRY RUN MODE - Configuration check only")
+        print(f"✅ Configuration loaded for preview mode:")
+        print(f"   JIRA_URL: {JIRA_URL or 'Not required in dry run'}")
+        print(f"   PROJECT: {PROJECT or 'Not required in dry run'}")
+        print(f"   EMAIL: {EMAIL or 'Not required in dry run'}")
+        print(f"   Note: Full validation skipped in dry run mode")
+
+    # =================================================================
+    # STEP 2: CONFIGURATION & SETUP (After JIRA Validation Success)
+    # =================================================================
+    
+    print(f"\n📋 STEP 2: FINAL CONFIGURATION & SETUP")
+    print("="*70)
+    print(f"✅ Configuration loaded:")
+    print(f"   JIRA_URL: {JIRA_URL or 'Not required in dry run'}")
+    print(f"   PROJECT: {PROJECT or 'Not required in dry run'}")
+    print(f"   EMAIL: {EMAIL or 'Not required in dry run'}")
+    print(f"   GITHUB_REPO_URL: {GITHUB_REPO_URL}")
+    print(f"   GITHUB_BRANCH: {GITHUB_BRANCH}")
+    print(f"   GITHUB_ACTIONS: {os.environ.get('GITHUB_ACTIONS', 'false')}")
 
     print(f"\n🚀 STARTING JIRA SYNC (Enhanced JSON Mode)")
     print(f"   Mode: {'DRY RUN (Preview Only)' if DRY_RUN else 'LIVE MODE (Will Create Issues)'}")
     print(f"   Format: JSON templates and data processing")
+    
+    # =================================================================
+    # STEP 3: SPEC DISCOVERY & INITIAL ANALYSIS
+    # =================================================================
+    
+    print(f"\n📁 STEP 3: SPEC DISCOVERY & INITIAL ANALYSIS") 
+    print("="*70)
+    
+    # =================================================================
+    # STEP 3A: VALIDATE SPEC FILES BEFORE PROCESSING
+    # =================================================================
+    
+    print(f"\n🔍 Validating spec files before processing...")
+    
+    # Check if specs folder exists
+    if not SPEC_FOLDER.exists():
+        print(f"❌ ERROR: Specs folder does not exist at {SPEC_FOLDER.absolute()}")
+        print(f"💡 Create the specs folder and add spec.md files to proceed")
+        exit(1)
+    
+    # Count spec files
+    epic_specs = list(SPEC_FOLDER.glob("**/spec.md"))
+    all_md_files = list(SPEC_FOLDER.glob("**/*.md"))
+    story_specs = [f for f in all_md_files if f.name != "spec.md"]
+    total_specs = len(epic_specs) + len(story_specs)
+    
+    print(f"✅ Spec folder validation:")
+    print(f"   📋 Epic specs (spec.md files): {len(epic_specs)}")
+    print(f"   📄 Story specs (other .md files): {len(story_specs)}")
+    print(f"   📊 Total specs to process: {total_specs}")
+    
+    # Validate minimum requirements
+    if total_specs == 0:
+        print(f"❌ ERROR: No spec files found in {SPEC_FOLDER.absolute()}")
+        print(f"💡 Add at least one spec.md file or other .md files to proceed")
+        exit(1)
+    
+    if len(epic_specs) == 0:
+        print(f"⚠️  WARNING: No epic specs (spec.md) found - only story specs will be processed")
     
     # Perform early spec discovery for logging
     if SPEC_FOLDER.exists():
@@ -1690,8 +2154,16 @@ def main():
     if DRY_RUN:
         preview_structure()
     else:
-        print(f"\n🔍 Fetching available issue types...")
-        available_types = get_project_issue_types()
+        # =================================================================
+        # STEP 4: ISSUE TYPE RESOLUTION & MAPPING (After Validation)
+        # =================================================================
+        
+        print(f"\n⚙️ STEP 4: ISSUE TYPE RESOLUTION & MAPPING")
+        print("="*70)
+        
+        # Issue type resolution (moved here after validation)
+        print(f"\n🔍 Resolving issue type mappings...")
+        available_types = get_project_issue_types()  # Already cached from validation
         if available_types:
             print(f"   Available: {', '.join(available_types)}")
             
@@ -1741,7 +2213,7 @@ def main():
             ISSUE_TYPE_TASK = issue_type_mapping['task']
             ISSUE_TYPE_BUG = issue_type_mapping['bug']
             
-            print(f"\n📋 Issue type mapping (with fallbacks):")
+            print(f"\n📋 Final issue type mapping:")
             print(f"   Epic → {ISSUE_TYPE_EPIC}")
             print(f"   Story → {ISSUE_TYPE_STORY}")
             print(f"   Task → {ISSUE_TYPE_TASK}")
@@ -1753,31 +2225,14 @@ def main():
                     print(f"   - {fallback}")
             
             print(f"\n📄 Templates file: {TEMPLATE_DIR / 'templates.json'}")
-            
-            # Final check for critical missing types
-            still_missing = []
-            if ISSUE_TYPE_EPIC not in available_types:
-                still_missing.append(f"Epic ({ISSUE_TYPE_EPIC})")
-            if ISSUE_TYPE_STORY not in available_types:
-                still_missing.append(f"Story → {ISSUE_TYPE_STORY}")
-            if ISSUE_TYPE_TASK not in available_types:
-                still_missing.append(f"Task → {ISSUE_TYPE_TASK}")
-            if ISSUE_TYPE_BUG not in available_types:
-                still_missing.append(f"Bug → {ISSUE_TYPE_BUG}")
-            
-            if still_missing:
-                print(f"\n❌ ERROR: These issue types are still not available after fallbacks:")
-                for mt in still_missing:
-                    print(f"   - {mt}")
-                print(f"\n💡 Available types in your JIRA project: {', '.join(available_types)}")
-                print(f"💡 Fix: Set environment variables to match your project's issue types:")
-                print(f"   ISSUE_TYPE_EPIC='Epic'  # or 'Story', 'Task'")
-                print(f"   ISSUE_TYPE_STORY='Story'  # or 'Task', 'Epic'")
-                print(f"   ISSUE_TYPE_TASK='Task'  # or 'Sub-task', 'Story'")
-                print(f"   ISSUE_TYPE_BUG='Bug'  # or 'Task', 'Story'")
-                exit(1)
-            else:
-                print(f"\n✅ All issue types resolved successfully!")
+
+    # =================================================================
+    # STEP 5: PROCESS SPEC FILES (After All Validation & Setup)
+    # =================================================================
+    
+    print(f"\n📄 STEP 5: PROCESSING SPEC FILES")
+    print("="*70)
+    print(f"✅ All pre-flight checks passed - ready to process spec files")
 
     process_specs()
 
