@@ -5,6 +5,7 @@ import tempfile
 import shutil
 import copy
 import argparse
+import time
 from pathlib import Path
 
 # ---------------------------------------
@@ -97,6 +98,7 @@ _template_cache = {}
 _issue_type_mapping = None
 _field_mapping_cache = None
 _available_fields_cache = {}
+_global_field_cache = {}  # Cache all fields for the project upfront
 
 # Enhanced JSON-based JIRA field mapping
 def get_field_mappings():
@@ -114,12 +116,65 @@ def get_field_mappings():
     
     return _field_mapping_cache
 
-def get_available_fields(project_key, issue_type_name):
-    """Get available fields for a specific project and issue type (cached)"""
+def prefetch_project_fields(project_key):
+    """Pre-fetch all available fields for the project to avoid repeated API calls"""
+    global _global_field_cache
+    
+    if project_key in _global_field_cache:
+        return _global_field_cache[project_key]
+    
+    print(f"🔍 Pre-fetching JIRA fields for project {project_key}...")
+    
+    try:
+        url = f"{JIRA_URL}/rest/api/3/issue/createmeta?projectKeys={project_key}&expand=projects.issuetypes.fields"
+        response = requests.get(url, auth=auth, headers={"Content-Type": "application/json"}, timeout=15)
+        
+        if response.ok:
+            data = response.json()
+            project_fields = {}
+            
+            if data.get("projects") and len(data["projects"]) > 0:
+                project = data["projects"][0]
+                for issue_type in project.get("issuetypes", []):
+                    type_name = issue_type.get("name")
+                    fields = list(issue_type.get("fields", {}).keys())
+                    project_fields[type_name] = fields
+                    
+                    # Also cache in the per-type cache
+                    cache_key = f"{project_key}:{type_name}"
+                    _available_fields_cache[cache_key] = fields
+            
+            _global_field_cache[project_key] = project_fields
+            total_fields = sum(len(fields) for fields in project_fields.values())
+            print(f"✅ Cached {len(project_fields)} issue types with {total_fields} total field mappings")
+            return project_fields
+            
+    except Exception as e:
+        print(f"⚠️  Warning: Could not pre-fetch project fields: {e}")
+    
+    _global_field_cache[project_key] = {}
+    return {}
+
+def get_cached_fields_for_type(project_key, issue_type_name):
+    """Get cached fields for a specific issue type (no API calls)"""
     cache_key = f"{project_key}:{issue_type_name}"
     
     if cache_key in _available_fields_cache:
         return _available_fields_cache[cache_key]
+    
+    # Fallback to global cache
+    global_cache = _global_field_cache.get(project_key, {})
+    return global_cache.get(issue_type_name, [])
+
+def get_available_fields(project_key, issue_type_name):
+    """Get available fields for a specific project and issue type (cached first)"""
+    # Try cached version first (no API call)
+    fields = get_cached_fields_for_type(project_key, issue_type_name)
+    if fields:
+        return fields
+    
+    # Fallback to API call (rare case)
+    cache_key = f"{project_key}:{issue_type_name}"
     
     url = f"{JIRA_URL}/rest/api/3/issue/createmeta?projectKeys={project_key}&issuetypeNames={issue_type_name}&expand=projects.issuetypes.fields"
     
@@ -133,47 +188,12 @@ def get_available_fields(project_key, issue_type_name):
                     issue_type = project["issuetypes"][0]
                     fields = list(issue_type.get("fields", {}).keys())
                     _available_fields_cache[cache_key] = fields
-                    print(f"     📋 Cached {len(fields)} fields for {issue_type_name}")
                     return fields
     except Exception as e:
-        print(f"     ⚠️  Warning: Could not fetch available fields for {issue_type_name}: {e}")
+        print(f"⚠️  Warning: Could not fetch fields for {issue_type_name}: {e}")
     
     _available_fields_cache[cache_key] = []
     return []
-
-def validate_custom_fields(json_data, available_fields=None):
-    """Validate and filter custom fields that are actually available in JIRA"""
-    if not json_data.get('custom_fields') or available_fields is None:
-        return {}
-    
-    field_mappings = get_field_mappings()
-    default_mappings = {
-        'business_value': 'customfield_10100',
-        'technical_complexity': 'customfield_10101', 
-        'category': 'customfield_10102',
-        'time_estimate': 'customfield_10103',
-        'epic_name': 'customfield_10011',
-        'epic_link': 'customfield_10014'
-    }
-    
-    # Merge default mappings with loaded mappings
-    all_mappings = {**default_mappings, **field_mappings}
-    
-    valid_fields = {}
-    skipped_fields = []
-    
-    for field_name, field_value in json_data['custom_fields'].items():
-        if field_name in all_mappings and field_value:
-            jira_field_id = all_mappings[field_name]
-            if jira_field_id in available_fields:
-                valid_fields[jira_field_id] = field_value
-            else:
-                skipped_fields.append(f"{field_name} ({jira_field_id})")
-    
-    if skipped_fields:
-        print(f"     ⚠️  Skipped unavailable custom fields: {', '.join(skipped_fields)}")
-    
-    return valid_fields
 
 def get_default_values():
     """Load default values from templates.json"""
@@ -899,7 +919,8 @@ def get_project_issue_types():
     response = requests.get(
         url,
         auth=auth,
-        headers={"Content-Type": "application/json"}
+        headers={"Content-Type": "application/json"},
+        timeout=10
     )
     
     if not response.ok:
@@ -960,23 +981,9 @@ def create_issue_from_json(json_file_path, json_data):
         print("JSON FILE:", json_file_path.name)
         print("TYPE     :", issue_type)
         print("TITLE    :", summary)
-        print("GITHUB   :", json_data['description']['github_link'])
-        print("SOURCE   :", json_data['description']['source_file'])
-        print("LABELS   :", json_data.get('labels', []))
-        print("PRIORITY :", json_data.get('priority', 'Medium'))
-        if json_data.get('severity'):
-            print("SEVERITY :", json_data['severity'])
-        if parent_key:
-            print("PARENT   :", parent_key)
-        if json_data.get('story_points'):
-            print("POINTS   :", json_data['story_points'])
+        print("PARENT   :", parent_key if parent_key else "None")
         print("---------------")
         return {"key": "DRYRUN"}
-
-    # Get available fields for this project and issue type (cached)
-    available_fields = get_available_fields(PROJECT, issue_type)
-    if len(available_fields) == 0:
-        print(f"     ⚠️  No fields available for {issue_type}")
 
     # Convert JSON description to ADF with GitHub link
     adf_description = json_to_adf_description(json_data)
@@ -1013,21 +1020,22 @@ def create_issue_from_json(json_file_path, json_data):
     if json_data.get('components'):
         payload["fields"]["components"] = [{"name": comp} for comp in json_data['components']]
 
-    # Add validated custom fields (only those available in JIRA)
-    valid_custom_fields = validate_custom_fields(json_data, available_fields)
-    for field_id, field_value in valid_custom_fields.items():
-        payload["fields"][field_id] = field_value
-        print(f"     🔧 Added custom field: {field_id} = {field_value}")
-
-    # Handle epic-specific fields with validation
-    if issue_type == ISSUE_TYPE_EPIC and json_data.get('epic_name'):
+    # Add basic custom fields (no validation for performance)
+    if json_data.get('custom_fields'):
         field_mappings = get_field_mappings()
-        epic_name_field = field_mappings.get('epic_name', 'customfield_10011')
-        if epic_name_field in available_fields:
-            payload["fields"][epic_name_field] = json_data['epic_name']
-            print(f"     🏆 Added epic name: {epic_name_field} = {json_data['epic_name']}")
-        else:
-            print(f"     ⚠️  Epic name field not available: {epic_name_field}")
+        basic_mappings = {
+            'epic_name': field_mappings.get('epic_name', 'customfield_10011'),
+            'story_points': field_mappings.get('story_points', 'customfield_10016')
+        }
+        
+        # Only add epic name and story points (most common)
+        if issue_type == ISSUE_TYPE_EPIC and json_data.get('epic_name'):
+            epic_field = basic_mappings['epic_name']
+            payload["fields"][epic_field] = json_data['epic_name']
+        
+        if issue_type == ISSUE_TYPE_STORY and json_data.get('story_points'):
+            story_field = basic_mappings['story_points']
+            payload["fields"][story_field] = json_data['story_points']
 
     url = f"{JIRA_URL}/rest/api/3/issue"
 
@@ -1035,56 +1043,35 @@ def create_issue_from_json(json_file_path, json_data):
         url,
         json=payload,
         auth=auth,
-        headers={"Content-Type": "application/json"}
+        headers={"Content-Type": "application/json"},
+        timeout=20
     )
+    
+    # Add small delay to avoid JIRA throttling
+    time.sleep(0.5)
 
     if not response.ok:
-        if response.status_code == 401:
-            print(f"\n❌ ERROR: HTTP 401 - Unauthorized")
-            print(f"🔑 JIRA Authentication Issue:")
-            print(f"   - Check that JIRA_EMAIL is correct: {EMAIL}")
-            print(f"   - Check that JIRA_TOKEN is valid and not expired")
-            print(f"   - Verify you have permission to create issues in project: {PROJECT}")
-            print(f"   - Token should be an API token from: https://id.atlassian.com/manage-profile/security/api-tokens")
-        elif response.status_code == 400:
-            print(f"\n❌ ERROR: HTTP 400 - Bad Request")
-            print(f"🔧 JIRA Configuration Issue:")
+        error_info = {"key": "ERROR", "status_code": response.status_code}
+        if response.status_code == 400:
+            print(f"⚠️  Field validation error for {issue_type}: {summary[:50]}...")
             try:
-                error_response = response.json()
-                if "errors" in error_response:
-                    print(f"   Field Errors:")
-                    for field, error in error_response["errors"].items():
-                        print(f"   - {field}: {error}")
-                        if field.startswith('customfield_'):
-                            print(f"     💡 This custom field may not exist or be configured for this project")
-                if "errorMessages" in error_response:
-                    print(f"   General Errors: {', '.join(error_response['errorMessages'])}")
+                error_data = response.json()
+                if "errors" in error_data:
+                    field_errors = list(error_data["errors"].keys())[:3]  # Show first 3
+                    print(f"   Problem fields: {', '.join(field_errors)}")
             except:
-                print(f"   Raw response: {response.text[:500]}")
-            print(f"\n💡 TROUBLESHOOTING:")
-            print(f"   - Check JIRA project configuration")
-            print(f"   - Verify custom fields exist and are on appropriate screens")
-            print(f"   - Use JIRA admin to check field permissions")
+                pass
+        elif response.status_code == 401:
+            print(f"❌ Authentication error - check JIRA credentials")
         else:
-            print(f"\n❌ ERROR: HTTP {response.status_code}")
-            print(f"URL: {url}")
-            print(f"JSON: {json_file_path}")
-            try:
-                error_response = response.json()
-                print(f"Response: {error_response}")
-            except:
-                print(f"Response: {response.text[:500]}")
+            print(f"⚠️  HTTP {response.status_code} error for {issue_type}")
         
-        # Don't raise exception, return error info instead
-        return {"key": "ERROR", "status_code": response.status_code, "error": response.text[:500]}
+        return error_info
 
     data = response.json()
     issue_key = data.get('key')
-    issue_url = f"{JIRA_URL}/browse/{issue_key}"
     
-    print(f"  ✅ Created {issue_type}: {issue_key} (JSON: {json_file_path.name})")
-    print(f"     🔗 JIRA URL: {issue_url}")
-    print(f"     📋 GitHub: {json_data['description']['github_link']}")
+    print(f"  ✅ {issue_key} ({issue_type})")
 
     return data
 
@@ -1187,9 +1174,7 @@ def process_specs():
         # First pass: create epic from main spec.md
         for file in sorted(SPEC_FOLDER.glob("**/spec.md")):
 
-            print(f"\n📋 Processing EPIC: {file}")
-            print(f"   📍 Spec Location: {file.absolute()}")
-            print(f"   🔗 GitHub Source: {GITHUB_REPO_URL}/blob/{GITHUB_BRANCH}/{file}")
+            print(f"\n📋 Processing EPIC: {file.relative_to(SPEC_FOLDER)}")
 
             title, description, tasks = parse_markdown(file)
             
@@ -1216,9 +1201,7 @@ def process_specs():
             if file.name == "spec.md":
                 continue
 
-            print(f"\n📄 Processing STORY: {file}")
-            print(f"   📍 Spec Location: {file.absolute()}")
-            print(f"   🔗 GitHub Source: {GITHUB_REPO_URL}/blob/{GITHUB_BRANCH}/{file}")
+            print(f"📄 Processing STORY: {file.relative_to(SPEC_FOLDER)}")
 
             title, description, tasks = parse_markdown(file)
             
@@ -1543,6 +1526,10 @@ def main():
         # Set up authentication
         global auth
         auth = (EMAIL, TOKEN)
+        
+        # Pre-fetch all project fields for performance
+        if not DRY_RUN:
+            prefetch_project_fields(PROJECT)
 
     print(f"\n🚀 STARTING JIRA SYNC (Enhanced JSON Mode)")
     print(f"   Mode: {'DRY RUN (Preview Only)' if DRY_RUN else 'LIVE MODE (Will Create Issues)'}")
