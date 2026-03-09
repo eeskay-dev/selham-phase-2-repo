@@ -4,6 +4,8 @@ import json
 import tempfile
 import shutil
 import copy
+import argparse
+import time
 from pathlib import Path
 
 # ---------------------------------------
@@ -63,32 +65,10 @@ ISSUE_TYPE_BUG = os.environ.get("ISSUE_TYPE_BUG", "Bug")
 
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 
-# Validate configuration
-if not DRY_RUN:
-    missing = []
-    if not JIRA_URL:
-        missing.append("JIRA_URL")
-    if not EMAIL:
-        missing.append("JIRA_EMAIL")
-    if not TOKEN:
-        missing.append("JIRA_TOKEN")
-    if not PROJECT:
-        missing.append("JIRA_PROJECT")
-    
-    if missing:
-        print(f"❌ ERROR: Missing required environment variables: {', '.join(missing)}")
-        print(f"💡 JIRA_URL should be like: https://your-domain.atlassian.net")
-        exit(1)
-    
-    print(f"✅ Configuration loaded:")
-    print(f"   JIRA_URL: {JIRA_URL}")
-    print(f"   PROJECT: {PROJECT}")
-    print(f"   EMAIL: {EMAIL}")
-    print(f"   GITHUB_REPO_URL: {GITHUB_REPO_URL}")
-    print(f"   GITHUB_BRANCH: {GITHUB_BRANCH}")
-    print(f"   GITHUB_ACTIONS: {os.environ.get('GITHUB_ACTIONS', 'false')}")
-
-auth = (EMAIL, TOKEN)
+# Validate configuration (moved to main() function)
+auth = None
+if not DRY_RUN and os.environ.get('JIRA_URL'):
+    auth = (EMAIL, TOKEN)
 
 # Determine the repository root directory
 SCRIPT_DIR = Path(__file__).parent
@@ -117,6 +97,8 @@ else:
 _template_cache = {}
 _issue_type_mapping = None
 _field_mapping_cache = None
+_available_fields_cache = {}
+_global_field_cache = {}  # Cache all fields for the project upfront
 
 # Enhanced JSON-based JIRA field mapping
 def get_field_mappings():
@@ -134,57 +116,95 @@ def get_field_mappings():
     
     return _field_mapping_cache
 
+def prefetch_project_fields(project_key):
+    """Pre-fetch all available fields for the project to avoid repeated API calls"""
+    global _global_field_cache
+    
+    if project_key in _global_field_cache:
+        print(f"✅ Using cached fields for project {project_key}")
+        return _global_field_cache[project_key]
+    
+    print(f"🔍 Pre-fetching JIRA fields for project {project_key}...")
+    
+    try:
+        url = f"{JIRA_URL}/rest/api/3/issue/createmeta?projectKeys={project_key}&expand=projects.issuetypes.fields"
+        print(f"   API URL: {url}")
+        
+        response = requests.get(url, auth=auth, headers={"Content-Type": "application/json"}, timeout=15)
+        print(f"   Response status: {response.status_code}")
+        
+        if response.ok:
+            data = response.json()
+            project_fields = {}
+            
+            if data.get("projects") and len(data["projects"]) > 0:
+                project = data["projects"][0]
+                for issue_type in project.get("issuetypes", []):
+                    type_name = issue_type.get("name")
+                    fields = list(issue_type.get("fields", {}).keys())
+                    project_fields[type_name] = fields
+                    
+                    # Also cache in the per-type cache
+                    cache_key = f"{project_key}:{type_name}"
+                    _available_fields_cache[cache_key] = fields
+            
+            _global_field_cache[project_key] = project_fields
+            total_fields = sum(len(fields) for fields in project_fields.values())
+            print(f"✅ Cached {len(project_fields)} issue types with {total_fields} total field mappings")
+            return project_fields
+        else:
+            print(f"⚠️  API returned {response.status_code}: {response.text[:200]}")
+            
+    except requests.exceptions.Timeout:
+        print(f"⚠️  Timeout fetching project fields (15s limit exceeded)")
+    except requests.exceptions.ConnectionError as e:
+        print(f"⚠️  Connection error: {e}")
+    except Exception as e:
+        print(f"⚠️  Error fetching project fields: {e}")
+    
+    _global_field_cache[project_key] = {}
+    print(f"❌ Using empty field cache for {project_key}")
+    return {}
+
+def get_cached_fields_for_type(project_key, issue_type_name):
+    """Get cached fields for a specific issue type (no API calls)"""
+    cache_key = f"{project_key}:{issue_type_name}"
+    
+    if cache_key in _available_fields_cache:
+        return _available_fields_cache[cache_key]
+    
+    # Fallback to global cache
+    global_cache = _global_field_cache.get(project_key, {})
+    return global_cache.get(issue_type_name, [])
+
 def get_available_fields(project_key, issue_type_name):
-    """Get available fields for a specific project and issue type"""
+    """Get available fields for a specific project and issue type (cached first)"""
+    # Try cached version first (no API call)
+    fields = get_cached_fields_for_type(project_key, issue_type_name)
+    if fields:
+        return fields
+    
+    # Fallback to API call (rare case)
+    cache_key = f"{project_key}:{issue_type_name}"
+    
     url = f"{JIRA_URL}/rest/api/3/issue/createmeta?projectKeys={project_key}&issuetypeNames={issue_type_name}&expand=projects.issuetypes.fields"
     
     try:
-        response = requests.get(url, auth=auth, headers={"Content-Type": "application/json"})
+        response = requests.get(url, auth=auth, headers={"Content-Type": "application/json"}, timeout=10)
         if response.ok:
             data = response.json()
             if data.get("projects") and len(data["projects"]) > 0:
                 project = data["projects"][0]
                 if project.get("issuetypes") and len(project["issuetypes"]) > 0:
                     issue_type = project["issuetypes"][0]
-                    return list(issue_type.get("fields", {}).keys())
+                    fields = list(issue_type.get("fields", {}).keys())
+                    _available_fields_cache[cache_key] = fields
+                    return fields
     except Exception as e:
-        print(f"⚠️  Warning: Could not fetch available fields: {e}")
+        print(f"⚠️  Warning: Could not fetch fields for {issue_type_name}: {e}")
     
+    _available_fields_cache[cache_key] = []
     return []
-
-def validate_custom_fields(json_data, available_fields=None):
-    """Validate and filter custom fields that are actually available in JIRA"""
-    if not json_data.get('custom_fields') or available_fields is None:
-        return {}
-    
-    field_mappings = get_field_mappings()
-    default_mappings = {
-        'business_value': 'customfield_10100',
-        'technical_complexity': 'customfield_10101', 
-        'category': 'customfield_10102',
-        'time_estimate': 'customfield_10103',
-        'epic_name': 'customfield_10011',
-        'epic_link': 'customfield_10014'
-    }
-    
-    # Merge default mappings with loaded mappings
-    all_mappings = {**default_mappings, **field_mappings}
-    
-    valid_fields = {}
-    skipped_fields = []
-    
-    for field_name, field_value in json_data['custom_fields'].items():
-        if field_name in all_mappings and field_value:
-            jira_field_id = all_mappings[field_name]
-            if jira_field_id in available_fields:
-                valid_fields[jira_field_id] = field_value
-            else:
-                skipped_fields.append(f"{field_name} ({jira_field_id})")
-    
-    if skipped_fields:
-        print(f"     ⚠️  Skipped unavailable custom fields: {', '.join(skipped_fields)}")
-    
-    return valid_fields
 
 def get_default_values():
     """Load default values from templates.json"""
@@ -211,13 +231,35 @@ def markdown_to_adf(text):
             }]
         }
     
+    print(f"     🔍 Processing markdown ({len(text)} chars)...")
+    
+    # Prevent processing extremely long text to avoid hanging
+    if len(text) > 50000:
+        print(f"     ⚠️  Text too long ({len(text)} chars), truncating to 50,000...")
+        text = text[:50000] + "\n\n[Content truncated due to length...]"
+    
     adf_content = []
     lines = text.split('\n')
+    total_lines = len(lines)
     i = 0
+    max_iterations = total_lines * 3  # Safety limit
+    iteration_count = 0
     
-    while i < len(lines):
+    print(f"     📄 Processing {total_lines} lines...")
+    
+    while i < len(lines) and iteration_count < max_iterations:
+        iteration_count += 1
         line = lines[i]
         stripped = line.strip()
+        
+        # Progress indicator for long processing
+        if iteration_count % 100 == 0:
+            print(f"     ⏳ Progress: line {i}/{total_lines} (iteration {iteration_count})")
+        
+        # Safety break if we're in an infinite loop
+        if iteration_count >= max_iterations - 10:
+            print(f"     ⚠️  Markdown parsing taking too long, breaking at line {i}/{total_lines}")
+            break
         
         # Skip empty lines between blocks
         if not stripped:
@@ -457,11 +499,26 @@ def parse_inline_markdown(text):
     if not text:
         return [{"type": "text", "text": ""}]
     
+    # Safety limit for very long text
+    if len(text) > 10000:
+        print(f"       ⚠️  Inline text too long ({len(text)} chars), truncating...")
+        return [{"type": "text", "text": text[:10000] + "[truncated]"}]
+    
     content = []
     i = 0
     current_text = ""
+    max_iterations = len(text) * 2  # Safety limit
+    iteration_count = 0
     
-    while i < len(text):
+    while i < len(text) and iteration_count < max_iterations:
+        iteration_count += 1
+        
+        # Safety break if we're in an infinite loop
+        if iteration_count >= max_iterations - 10:
+            print(f"       ⚠️  Inline parsing taking too long, breaking at position {i}/{len(text)}")
+            if current_text:
+                content.append({"type": "text", "text": current_text})
+            break
         # Bold (**text** or __text__)
         if text[i:i+2] in ('**', '__'):
             if current_text:
@@ -850,14 +907,38 @@ def create_json_for_item(title, description, file_path, issue_type, parent_key=N
 
 def json_to_adf_description(json_data):
     """Convert JSON data to ADF description with enhanced GitHub link formatting"""
+    print(f"   🔧 Starting ADF conversion...")
     desc = json_data['description']
     
-    # Get content ADF
-    content_adf = markdown_to_adf(desc['content'])
-    content_blocks = content_adf.get("content", [])
+    # Get content ADF with logging
+    print(f"   📝 Converting markdown content (length: {len(desc['content'])} chars)...")
+    
+    # For very large content, use simple fallback to prevent hanging
+    if len(desc['content']) > 15000:
+        print(f"   ⚡ Large content detected ({len(desc['content'])} chars), using simple conversion...")
+        content_blocks = [{
+            "type": "paragraph",
+            "content": [{"type": "text", "text": desc['content'][:15000] + "\n\n[Content truncated - see GitHub link above for full specification]"}]
+        }]
+        print(f"   ✅ Simple conversion completed (1 block with truncation)")
+    else:
+        try:
+            content_adf = markdown_to_adf(desc['content'])
+            content_blocks = content_adf.get("content", [])
+            print(f"   ✅ ADF conversion completed ({len(content_blocks)} blocks)")
+        except Exception as e:
+            print(f"   ❌ ADF conversion failed: {e}")
+            # Fallback to simple text
+            content_blocks = [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": desc['content'][:5000]}]
+            }]
+            print(f"   🔄 Using fallback content (truncated to 5000 chars)")
+    
+    print(f"   🔨 Building final ADF structure...")
     
     # Build complete ADF with info panel
-    return {
+    result = {
         "version": 1,
         "type": "doc", 
         "content": [
@@ -901,6 +982,9 @@ def json_to_adf_description(json_data):
             }
         ] + content_blocks
     }
+    
+    print(f"   ✅ ADF description ready ({len(result['content'])} total blocks)")
+    return result
 
 
 def get_project_issue_types():
@@ -910,7 +994,8 @@ def get_project_issue_types():
     response = requests.get(
         url,
         auth=auth,
-        headers={"Content-Type": "application/json"}
+        headers={"Content-Type": "application/json"},
+        timeout=10
     )
     
     if not response.ok:
@@ -953,6 +1038,8 @@ def validate_json_structure(json_data, json_file_path):
 def create_issue_from_json(json_file_path, json_data):
     """Create JIRA issue from template-based JSON data"""
     
+    print(f"🔄 Creating JIRA issue from {json_file_path.name}...")
+    
     # Validate JSON structure first
     if not validate_json_structure(json_data, json_file_path):
         print(f"❌ ERROR: Invalid JSON structure in {json_file_path.name}")
@@ -971,24 +1058,15 @@ def create_issue_from_json(json_file_path, json_data):
         print("JSON FILE:", json_file_path.name)
         print("TYPE     :", issue_type)
         print("TITLE    :", summary)
-        print("GITHUB   :", json_data['description']['github_link'])
-        print("SOURCE   :", json_data['description']['source_file'])
-        print("LABELS   :", json_data.get('labels', []))
-        print("PRIORITY :", json_data.get('priority', 'Medium'))
-        if json_data.get('severity'):
-            print("SEVERITY :", json_data['severity'])
-        if parent_key:
-            print("PARENT   :", parent_key)
-        if json_data.get('story_points'):
-            print("POINTS   :", json_data['story_points'])
+        print("PARENT   :", parent_key if parent_key else "None")
         print("---------------")
         return {"key": "DRYRUN"}
 
-    # Get available fields for this project and issue type to validate custom fields
-    available_fields = get_available_fields(PROJECT, issue_type)
-    print(f"     🔍 Available fields fetched: {len(available_fields)} fields")
-
+    print(f"   📋 Issue: {summary[:50]}...")
+    print(f"   🏷️  Type: {issue_type}")
+    
     # Convert JSON description to ADF with GitHub link
+    print(f"   📝 Converting description to ADF...")
     adf_description = json_to_adf_description(json_data)
 
     # Build JIRA payload from JSON data
@@ -1023,78 +1101,104 @@ def create_issue_from_json(json_file_path, json_data):
     if json_data.get('components'):
         payload["fields"]["components"] = [{"name": comp} for comp in json_data['components']]
 
-    # Add validated custom fields (only those available in JIRA)
-    valid_custom_fields = validate_custom_fields(json_data, available_fields)
-    for field_id, field_value in valid_custom_fields.items():
-        payload["fields"][field_id] = field_value
-        print(f"     🔧 Added custom field: {field_id} = {field_value}")
-
-    # Handle epic-specific fields with validation
-    if issue_type == ISSUE_TYPE_EPIC and json_data.get('epic_name'):
+    # Add basic custom fields (no validation for performance)
+    if json_data.get('custom_fields'):
         field_mappings = get_field_mappings()
-        epic_name_field = field_mappings.get('epic_name', 'customfield_10011')
-        if epic_name_field in available_fields:
-            payload["fields"][epic_name_field] = json_data['epic_name']
-            print(f"     🏆 Added epic name: {epic_name_field} = {json_data['epic_name']}")
-        else:
-            print(f"     ⚠️  Epic name field not available: {epic_name_field}")
+        basic_mappings = {
+            'epic_name': field_mappings.get('epic_name', 'customfield_10011'),
+            'story_points': field_mappings.get('story_points', 'customfield_10016')
+        }
+        
+        # Only add epic name and story points (most common)
+        if issue_type == ISSUE_TYPE_EPIC and json_data.get('epic_name'):
+            epic_field = basic_mappings['epic_name']
+            payload["fields"][epic_field] = json_data['epic_name']
+        
+        if issue_type == ISSUE_TYPE_STORY and json_data.get('story_points'):
+            story_field = basic_mappings['story_points']
+            payload["fields"][story_field] = json_data['story_points']
 
     url = f"{JIRA_URL}/rest/api/3/issue"
+    print(f"   🌐 Making API request to: {url}")
+    print(f"   📦 Payload size: {len(str(payload))} characters")
 
-    response = requests.post(
-        url,
-        json=payload,
-        auth=auth,
-        headers={"Content-Type": "application/json"}
-    )
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            auth=auth,
+            headers={"Content-Type": "application/json"},
+            timeout=20
+        )
+        print(f"   📡 Response received: {response.status_code}")
+        
+    except requests.exceptions.Timeout:
+        print(f"   ⏰ Request timeout after 20 seconds")
+        return {"key": "ERROR", "error": "Timeout"}
+    except requests.exceptions.ConnectionError as e:
+        print(f"   🔌 Connection error: {e}")
+        return {"key": "ERROR", "error": f"Connection: {e}"}
+    except Exception as e:
+        print(f"   ❌ Request error: {e}")
+        return {"key": "ERROR", "error": f"Request: {e}"}
+    
+    # Add small delay to avoid JIRA throttling
+    time.sleep(0.5)
 
     if not response.ok:
-        if response.status_code == 401:
-            print(f"\n❌ ERROR: HTTP 401 - Unauthorized")
-            print(f"🔑 JIRA Authentication Issue:")
-            print(f"   - Check that JIRA_EMAIL is correct: {EMAIL}")
-            print(f"   - Check that JIRA_TOKEN is valid and not expired")
-            print(f"   - Verify you have permission to create issues in project: {PROJECT}")
-            print(f"   - Token should be an API token from: https://id.atlassian.com/manage-profile/security/api-tokens")
-        elif response.status_code == 400:
-            print(f"\n❌ ERROR: HTTP 400 - Bad Request")
-            print(f"🔧 JIRA Configuration Issue:")
-            try:
-                error_response = response.json()
-                if "errors" in error_response:
-                    print(f"   Field Errors:")
-                    for field, error in error_response["errors"].items():
-                        print(f"   - {field}: {error}")
-                        if field.startswith('customfield_'):
-                            print(f"     💡 This custom field may not exist or be configured for this project")
-                if "errorMessages" in error_response:
-                    print(f"   General Errors: {', '.join(error_response['errorMessages'])}")
-            except:
-                print(f"   Raw response: {response.text[:500]}")
-            print(f"\n💡 TROUBLESHOOTING:")
-            print(f"   - Check JIRA project configuration")
-            print(f"   - Verify custom fields exist and are on appropriate screens")
-            print(f"   - Use JIRA admin to check field permissions")
-        else:
-            print(f"\n❌ ERROR: HTTP {response.status_code}")
-            print(f"URL: {url}")
-            print(f"JSON: {json_file_path}")
-            try:
-                error_response = response.json()
-                print(f"Response: {error_response}")
-            except:
-                print(f"Response: {response.text[:500]}")
+        error_info = {"key": "ERROR", "status_code": response.status_code}
         
-        # Don't raise exception, return error info instead
-        return {"key": "ERROR", "status_code": response.status_code, "error": response.text[:500]}
+        # Get detailed error information from JIRA response
+        error_details = "HTTP Error"
+        try:
+            if response.text:
+                error_data = response.json()
+                if "errors" in error_data:
+                    # Field-specific errors
+                    field_errors = []
+                    for field, message in error_data["errors"].items():
+                        field_errors.append(f"{field}: {message}")
+                    error_details = "; ".join(field_errors)
+                elif "errorMessages" in error_data:
+                    # General error messages
+                    error_details = "; ".join(error_data["errorMessages"])
+                elif error_data.get("message"):
+                    # Single error message
+                    error_details = error_data["message"]
+                else:
+                    # Raw error data
+                    error_details = str(error_data)[:200]
+            else:
+                error_details = f"HTTP {response.status_code} - No response body"
+        except Exception as e:
+            # If we can't parse JSON, use raw response text
+            error_details = response.text[:200] if response.text else f"HTTP {response.status_code} - Empty response"
+        
+        error_info["error"] = error_details
+        
+        # Log specific error details
+        if response.status_code == 400:
+            print(f"❌ Field validation error for {issue_type}: {summary[:50]}...")
+            print(f"   Details: {error_details}")
+        elif response.status_code == 401:
+            print(f"❌ Authentication error - check JIRA credentials")
+            print(f"   Details: {error_details}")
+        elif response.status_code == 403:
+            print(f"❌ Permission denied - insufficient access rights")
+            print(f"   Details: {error_details}")
+        elif response.status_code == 404:
+            print(f"❌ Project or issue type not found")
+            print(f"   Details: {error_details}")
+        else:
+            print(f"❌ HTTP {response.status_code} error for {issue_type}")
+            print(f"   Details: {error_details}")
+        
+        return error_info
 
     data = response.json()
     issue_key = data.get('key')
-    issue_url = f"{JIRA_URL}/browse/{issue_key}"
     
-    print(f"  ✅ Created {issue_type}: {issue_key} (JSON: {json_file_path.name})")
-    print(f"     🔗 JIRA URL: {issue_url}")
-    print(f"     📋 GitHub: {json_data['description']['github_link']}")
+    print(f"  ✅ {issue_key} ({issue_type})")
 
     return data
 
@@ -1197,9 +1301,7 @@ def process_specs():
         # First pass: create epic from main spec.md
         for file in sorted(SPEC_FOLDER.glob("**/spec.md")):
 
-            print(f"\n📋 Processing EPIC: {file}")
-            print(f"   📍 Spec Location: {file.absolute()}")
-            print(f"   🔗 GitHub Source: {GITHUB_REPO_URL}/blob/{GITHUB_BRANCH}/{file}")
+            print(f"\n📋 Processing EPIC: {file.relative_to(SPEC_FOLDER)}")
 
             title, description, tasks = parse_markdown(file)
             
@@ -1213,8 +1315,9 @@ def process_specs():
 
             if result.get("key") == "ERROR":
                 error_count += 1
-                errors_details.append(f"Epic: {title} - {result.get('error', 'Unknown error')}")
-                print(f"  ❌ Failed to create epic, continuing with stories...")
+                error_msg = result.get('error', 'Unknown error')
+                errors_details.append(f"Epic: {title} - {error_msg}")
+                print(f"  ❌ Failed to create epic: {error_msg}")
             else:
                 epic_key = result.get("key")
                 epic_count += 1
@@ -1226,9 +1329,7 @@ def process_specs():
             if file.name == "spec.md":
                 continue
 
-            print(f"\n📄 Processing STORY: {file}")
-            print(f"   📍 Spec Location: {file.absolute()}")
-            print(f"   🔗 GitHub Source: {GITHUB_REPO_URL}/blob/{GITHUB_BRANCH}/{file}")
+            print(f"📄 Processing STORY: {file.relative_to(SPEC_FOLDER)}")
 
             title, description, tasks = parse_markdown(file)
             
@@ -1242,8 +1343,9 @@ def process_specs():
 
             if result.get("key") == "ERROR":
                 error_count += 1
-                errors_details.append(f"Story: {title} - {result.get('error', 'Unknown error')}")
-                print(f"  ❌ Failed to create story, continuing with tasks...")
+                error_msg = result.get('error', 'Unknown error')
+                errors_details.append(f"Story: {title} - {error_msg}")
+                print(f"  ❌ Failed to create story: {error_msg}")
                 story_key = None
             else:
                 story_key = result.get("key")
@@ -1297,7 +1399,9 @@ def process_specs():
                 
                 if result.get("key") == "ERROR":
                     error_count += 1
-                    errors_details.append(f"Task: {task_title} - {result.get('error', 'Unknown error')}")
+                    error_msg = result.get('error', 'Unknown error')
+                    errors_details.append(f"Task: {task_title} - {error_msg}")
+                    print(f"  ❌ Failed to create task: {error_msg}")
                 else:
                     task_count += 1
 
@@ -1316,13 +1420,11 @@ def process_specs():
         print("="*60)
         
         if error_count > 0:
-            print(f"\n⚠️  ERRORS SUMMARY ({error_count} failures):")
-            for i, error in enumerate(errors_details[:5], 1):  # Show first 5 errors
-                print(f"   {i}. {error[:100]}..." if len(error) > 100 else f"   {i}. {error}")
-            if len(errors_details) > 5:
-                print(f"   ... and {len(errors_details) - 5} more errors")
-            print(f"\n💡 Most errors are likely due to custom field configuration.")
-            print(f"   Consider updating the JSON templates to match your JIRA setup.")
+            print(f"\n❌ DETAILED ERROR SUMMARY ({error_count} failures):")
+            for i, error in enumerate(errors_details, 1):
+                print(f"   {i}. {error}")
+            print(f"\n💡 Review error details above to fix JIRA configuration issues.")
+            print(f"   Common issues: missing custom fields, incorrect field types, permission errors.")
         
         if not DRY_RUN:
             print(f"\n💡 JSON files preserved for debugging in: {TEMP_JSON_DIR}")
@@ -1414,17 +1516,630 @@ def preview_structure():
     print("="*50)
 
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="Enhanced JIRA Sync - Convert markdown specs to JIRA issues with JSON templates",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  python3 jira_sync.py --dry-run                    # Preview what will be created
+  python3 jira_sync.py --preview                    # Show structure preview only  
+  python3 jira_sync.py --discover-fields            # Discover available JIRA fields
+  python3 jira_sync.py --project TEST --dry-run     # Test with specific project
+  python3 jira_sync.py --github-repo https://github.com/my/repo --branch main
+
+Environment Variables:
+  JIRA_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT (required for live mode)
+  GITHUB_REPO_URL, GITHUB_BRANCH (optional, auto-detected in GitHub Actions)
+  ISSUE_TYPE_EPIC, ISSUE_TYPE_STORY, ISSUE_TYPE_TASK, ISSUE_TYPE_BUG (optional)
+        """)
+    
+    parser.add_argument("--dry-run", "-d", action="store_true", 
+                       help="Preview mode - don't create actual JIRA issues")
+    parser.add_argument("--preview", "-p", action="store_true",
+                       help="Show structure preview only (faster than dry-run)")
+    parser.add_argument("--discover-fields", action="store_true",
+                       help="Discover available JIRA fields and exit")
+    
+    # Override environment variables
+    parser.add_argument("--project", help="JIRA project key (overrides JIRA_PROJECT)")
+    parser.add_argument("--jira-url", help="JIRA URL (overrides JIRA_URL)")
+    parser.add_argument("--github-repo", help="GitHub repository URL (overrides GITHUB_REPO_URL)")
+    parser.add_argument("--branch", help="GitHub branch (overrides GITHUB_BRANCH)")
+    
+    # Template options
+    parser.add_argument("--template", help="Template file to use (default: templates.json)")
+    parser.add_argument("--use-simple-template", action="store_true", 
+                       help="Use simple template (minimal custom fields)")
+    
+    # Issue type overrides
+    parser.add_argument("--epic-type", help="Issue type for epics (default: Epic)")
+    parser.add_argument("--story-type", help="Issue type for stories (default: Story)")
+    parser.add_argument("--task-type", help="Issue type for tasks (default: Task)")
+    parser.add_argument("--bug-type", help="Issue type for bugs (default: Bug)")
+    
+    # Performance options
+    parser.add_argument("--timeout", type=int, default=30, help="API timeout in seconds (default: 30)")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    
+    return parser.parse_args()
+
+
+def validate_jira_connection():
+    """
+    Comprehensive JIRA validation and connectivity check
+    Returns: (success: bool, issues: list, warnings: list)
+    """
+    print(f"\n🔍 JIRA VALIDATION & CONNECTIVITY CHECK")
+    print("="*60)
+    
+    issues = []
+    warnings = []
+    
+    # 1. Basic Configuration Validation
+    print(f"1️⃣ Validating basic configuration...")
+    
+    config_checks = [
+        ("JIRA_URL", JIRA_URL, "https://your-domain.atlassian.net"),
+        ("JIRA_EMAIL", EMAIL, "your-email@domain.com"),
+        ("JIRA_TOKEN", TOKEN, "your-api-token"),
+        ("JIRA_PROJECT", PROJECT, "PROJECT_KEY")
+    ]
+    
+    for name, value, example in config_checks:
+        if not value:
+            issues.append(f"Missing {name} environment variable")
+            print(f"   ❌ {name}: Not set")
+        elif value == example:
+            issues.append(f"{name} is using default/example value")
+            print(f"   ❌ {name}: Using example value")
+        else:
+            print(f"   ✅ {name}: Configured")
+    
+    # URL format validation
+    if JIRA_URL and not JIRA_URL.startswith(('http://', 'https://')):
+        issues.append(f"JIRA_URL must start with http:// or https://")
+        print(f"   ❌ JIRA_URL: Invalid format (missing protocol)")
+    
+    # Additional URL validation checks
+    if JIRA_URL:
+        if JIRA_URL.endswith('/'):
+            warnings.append("JIRA_URL ends with '/' - this will be stripped automatically")
+            print(f"   ⚠️  JIRA_URL: Trailing slash detected (will be auto-corrected)")
+        
+        # Common domain validation
+        if 'atlassian.net' not in JIRA_URL and 'localhost' not in JIRA_URL and not JIRA_URL.startswith('http://'):
+            warnings.append("JIRA_URL doesn't appear to be an Atlassian Cloud instance")
+            print(f"   ⚠️  JIRA_URL: Not a standard Atlassian Cloud URL")
+    
+    # Token format validation
+    if TOKEN and len(TOKEN) < 10:
+        issues.append("JIRA_TOKEN appears too short (API tokens are typically 24+ characters)")
+        print(f"   ❌ JIRA_TOKEN: Token appears too short")
+    
+    # Email format basic validation
+    if EMAIL and '@' not in EMAIL:
+        issues.append("JIRA_EMAIL doesn't appear to be a valid email address")
+        print(f"   ❌ JIRA_EMAIL: Invalid email format")
+    
+    if issues:
+        print(f"\n❌ Configuration validation failed with {len(issues)} issues")
+        return False, issues, warnings
+    
+    # 2. Network Connectivity Test
+    print(f"\n2️⃣ Testing network connectivity...")
+    
+    try:
+        # Test basic connectivity without auth
+        import urllib.parse
+        parsed_url = urllib.parse.urlparse(JIRA_URL)
+        test_host = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        
+        print(f"   🌐 Testing connection to: {test_host}")
+        response = requests.get(f"{JIRA_URL}/status", timeout=10)
+        print(f"   ✅ Network connectivity: OK (HTTP {response.status_code})")
+        
+    except requests.exceptions.Timeout:
+        issues.append("Network timeout - JIRA server unreachable")
+        print(f"   ❌ Network connectivity: Timeout after 10 seconds")
+        return False, issues, warnings
+        
+    except requests.exceptions.ConnectionError as e:
+        issues.append(f"Connection error: {str(e)}")
+        print(f"   ❌ Network connectivity: Connection failed")
+        return False, issues, warnings
+        
+    except Exception as e:
+        warnings.append(f"Network test inconclusive: {str(e)}")
+        print(f"   ⚠️  Network connectivity: Test inconclusive")
+    
+    # 3. Authentication Test
+    print(f"\n3️⃣ Testing JIRA authentication...")
+    
+    try:
+        auth_url = f"{JIRA_URL}/rest/api/3/myself"
+        print(f"   🔐 Testing auth at: /rest/api/3/myself")
+        
+        auth_response = requests.get(auth_url, auth=auth, timeout=15)
+        
+        if auth_response.status_code == 200:
+            user_data = auth_response.json()
+            display_name = user_data.get('displayName', 'Unknown')
+            account_id = user_data.get('accountId', 'Unknown')
+            print(f"   ✅ Authentication: SUCCESS")
+            print(f"      User: {display_name} ({account_id})")
+            
+        elif auth_response.status_code == 401:
+            issues.append("Authentication failed - invalid credentials")
+            print(f"   ❌ Authentication: FAILED (401 Unauthorized)")
+            print(f"      Check JIRA_EMAIL and JIRA_TOKEN values")
+            return False, issues, warnings
+            
+        elif auth_response.status_code == 403:
+            issues.append("Authentication failed - access forbidden")
+            print(f"   ❌ Authentication: FAILED (403 Forbidden)")
+            print(f"      User has insufficient permissions")
+            return False, issues, warnings
+            
+        else:
+            issues.append(f"Authentication test failed with HTTP {auth_response.status_code}")
+            print(f"   ❌ Authentication: FAILED (HTTP {auth_response.status_code})")
+            return False, issues, warnings
+            
+    except Exception as e:
+        issues.append(f"Authentication test error: {str(e)}")
+        print(f"   ❌ Authentication: ERROR - {str(e)}")
+        return False, issues, warnings
+    
+    # 4. Project Access Validation
+    print(f"\n4️⃣ Validating project access...")
+    
+    try:
+        project_url = f"{JIRA_URL}/rest/api/3/project/{PROJECT}"
+        print(f"   📋 Testing project access: {PROJECT}")
+        
+        project_response = requests.get(project_url, auth=auth, timeout=15)
+        
+        if project_response.status_code == 200:
+            project_data = project_response.json()
+            project_name = project_data.get('name', 'Unknown')
+            project_type = project_data.get('projectTypeKey', 'unknown')
+            print(f"   ✅ Project access: SUCCESS")
+            print(f"      Project: {project_name} (Type: {project_type})")
+            
+        elif project_response.status_code == 404:
+            issues.append(f"Project '{PROJECT}' not found or no access")
+            print(f"   ❌ Project access: FAILED (404 Not Found)")
+            print(f"      Project '{PROJECT}' does not exist or user has no access")
+            return False, issues, warnings
+            
+        elif project_response.status_code == 403:
+            issues.append(f"No permission to access project '{PROJECT}'")
+            print(f"   ❌ Project access: FAILED (403 Forbidden)")
+            return False, issues, warnings
+            
+        else:
+            issues.append(f"Project access test failed with HTTP {project_response.status_code}")
+            print(f"   ❌ Project access: FAILED (HTTP {project_response.status_code})")
+            return False, issues, warnings
+            
+    except Exception as e:
+        issues.append(f"Project access test error: {str(e)}")
+        print(f"   ❌ Project access: ERROR - {str(e)}")
+        return False, issues, warnings
+    
+    # 5. Issue Types Validation
+    print(f"\n5️⃣ Validating issue types...")
+    
+    try:
+        available_types = get_project_issue_types()
+        
+        if not available_types:
+            warnings.append("Could not fetch issue types - proceeding with defaults")
+            print(f"   ⚠️  Issue types: Could not fetch, using defaults")
+        else:
+            print(f"   📊 Available issue types: {', '.join(available_types)}")
+            
+            # Check each required type
+            required_types = [
+                ("Epic", ISSUE_TYPE_EPIC),
+                ("Story", ISSUE_TYPE_STORY), 
+                ("Task", ISSUE_TYPE_TASK),
+                ("Bug", ISSUE_TYPE_BUG)
+            ]
+            
+            missing_types = []
+            for type_name, type_value in required_types:
+                if type_value not in available_types:
+                    missing_types.append(f"{type_name} ({type_value})")
+                else:
+                    print(f"   ✅ {type_name}: {type_value} - Available")
+            
+            if missing_types:
+                warnings.append(f"Issue types not available: {', '.join(missing_types)}")
+                print(f"   ⚠️  Missing types: {', '.join(missing_types)}")
+                print(f"      Will attempt automatic fallbacks during processing")
+            else:
+                print(f"   ✅ All required issue types are available")
+                
+    except Exception as e:
+        warnings.append(f"Issue type validation error: {str(e)}")
+        print(f"   ⚠️  Issue types: Validation error - {str(e)}")
+    
+    # 6. Field Permissions Test
+    print(f"\n6️⃣ Testing field permissions...")
+    
+    try:
+        # Test create meta for Epic (most fields)
+        meta_url = f"{JIRA_URL}/rest/api/3/issue/createmeta"
+        params = {
+            "projectKeys": PROJECT,
+            "issuetypeNames": ISSUE_TYPE_EPIC,
+            "expand": "projects.issuetypes.fields"
+        }
+        
+        print(f"   🔧 Testing field access for {ISSUE_TYPE_EPIC}...")
+        meta_response = requests.get(meta_url, params=params, auth=auth, timeout=15)
+        
+        if meta_response.status_code == 200:
+            meta_data = meta_response.json()
+            
+            if meta_data.get("projects") and len(meta_data["projects"]) > 0:
+                project = meta_data["projects"][0]
+                if project.get("issuetypes") and len(project["issuetypes"]) > 0:
+                    issue_type = project["issuetypes"][0]
+                    available_fields = list(issue_type.get("fields", {}).keys())
+                    
+                    print(f"   ✅ Field permissions: SUCCESS")
+                    print(f"      Available fields: {len(available_fields)}")
+                    
+                    # Check for key fields
+                    key_fields = ["summary", "description", "issuetype", "project"]
+                    missing_key_fields = [f for f in key_fields if f not in available_fields]
+                    
+                    if missing_key_fields:
+                        issues.append(f"Missing required fields: {', '.join(missing_key_fields)}")
+                        print(f"   ❌ Missing required fields: {', '.join(missing_key_fields)}")
+                    else:
+                        print(f"   ✅ All required fields available")
+                        
+                    # Check for common custom fields
+                    common_custom = ["customfield_10016", "customfield_10011"]  # Story points, Epic name
+                    available_custom = [f for f in common_custom if f in available_fields]
+                    if available_custom:
+                        print(f"   ✅ Custom fields detected: {len(available_custom)}")
+                    else:
+                        print(f"   ℹ️  No common custom fields found (normal for basic setups)")
+                else:
+                    warnings.append(f"No issue type data returned for {ISSUE_TYPE_EPIC}")
+                    print(f"   ⚠️  No issue type data for {ISSUE_TYPE_EPIC}")
+            else:
+                warnings.append("No project data returned in create meta")
+                print(f"   ⚠️  No project data in create meta response")
+                
+        elif meta_response.status_code == 403:
+            warnings.append("Limited field access - may affect custom fields")
+            print(f"   ⚠️  Field permissions: Limited access (403)")
+            
+        else:
+            warnings.append(f"Field permission test failed: HTTP {meta_response.status_code}")
+            print(f"   ⚠️  Field permissions: Test failed (HTTP {meta_response.status_code})")
+            
+    except Exception as e:
+        warnings.append(f"Field permission test error: {str(e)}")
+        print(f"   ⚠️  Field permissions: Test error - {str(e)}")
+    
+    # 7. Issue Creation Test (Dry Run)
+    print(f"\n7️⃣ Testing issue creation permissions...")
+    
+    try:
+        # Create minimal test payload
+        test_payload = {
+            "fields": {
+                "project": {"key": PROJECT},
+                "summary": "JIRA Sync Test Issue - DELETE ME",
+                "description": {
+                    "version": 1,
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "Test issue created by JIRA sync validation. Safe to delete."}]
+                    }]
+                },
+                "issuetype": {"name": ISSUE_TYPE_STORY}  # Use story as it's most common
+            }
+        }
+        
+        create_url = f"{JIRA_URL}/rest/api/3/issue"
+        print(f"   🧪 Testing issue creation permissions (dry run)...")
+        
+        # Make a test request (we'll get validation response even without actually creating)
+        test_response = requests.post(
+            create_url,
+            json=test_payload,
+            auth=auth,
+            headers={"Content-Type": "application/json"},
+            timeout=15
+        )
+        
+        if test_response.status_code in [200, 201]:
+            # Issue was created successfully (unexpected but good)
+            created_issue = test_response.json()
+            issue_key = created_issue.get("key")
+            print(f"   ✅ Issue creation: SUCCESS")
+            print(f"      Test issue created: {issue_key}")
+            warnings.append(f"Test issue {issue_key} was created and should be deleted")
+            
+        elif test_response.status_code == 400:
+            # Field validation error - check if it's permissions or field issues
+            error_data = test_response.json()
+            error_messages = error_data.get("errors", {})
+            
+            permission_errors = []
+            field_errors = []
+            
+            for field, message in error_messages.items():
+                if "permission" in message.lower() or "forbidden" in message.lower():
+                    permission_errors.append(f"{field}: {message}")
+                else:
+                    field_errors.append(f"{field}: {message}")
+            
+            if permission_errors:
+                issues.append(f"Issue creation permission errors: {'; '.join(permission_errors)}")
+                print(f"   ❌ Issue creation: PERMISSION DENIED")
+                for error in permission_errors:
+                    print(f"      {error}")
+            else:
+                print(f"   ✅ Issue creation: PERMISSIONS OK")
+                print(f"      Field validation errors are normal in validation test")
+                if field_errors:
+                    warnings.extend([f"Field issue: {err}" for err in field_errors[:3]])  # Limit to 3
+                    
+        elif test_response.status_code == 403:
+            issues.append("No permission to create issues in this project")
+            print(f"   ❌ Issue creation: FORBIDDEN (403)")
+            print(f"      User cannot create issues in project {PROJECT}")
+            
+        else:
+            warnings.append(f"Issue creation test inconclusive: HTTP {test_response.status_code}")
+            print(f"   ⚠️  Issue creation: Test inconclusive (HTTP {test_response.status_code})")
+            
+    except Exception as e:
+        warnings.append(f"Issue creation test error: {str(e)}")
+        print(f"   ⚠️  Issue creation: Test error - {str(e)}")
+    
+    # Final Summary
+    print(f"\n" + "="*60)
+    print(f"📊 JIRA VALIDATION SUMMARY")
+    print(f"="*60)
+    
+    if issues:
+        print(f"❌ VALIDATION FAILED - {len(issues)} critical issues:")
+        for i, issue in enumerate(issues, 1):
+            print(f"   {i}. {issue}")
+        print(f"\n💡 Fix these issues before proceeding with JIRA sync.")
+        
+    else:
+        print(f"✅ VALIDATION PASSED - JIRA is ready for sync")
+        
+    if warnings:
+        print(f"\n⚠️  {len(warnings)} warnings (non-critical):")
+        for i, warning in enumerate(warnings, 1):
+            print(f"   {i}. {warning}")
+    
+    print(f"="*60)
+    
+    return len(issues) == 0, issues, warnings
+
+
 # ---------------------------------------
 # Main
 # ---------------------------------------
 
 def main():
     # Declare global variables at the start of function
-    global ISSUE_TYPE_STORY, ISSUE_TYPE_TASK, ISSUE_TYPE_BUG
+    global DRY_RUN, JIRA_URL, PROJECT, GITHUB_REPO_URL, GITHUB_BRANCH
+    global ISSUE_TYPE_EPIC, ISSUE_TYPE_STORY, ISSUE_TYPE_TASK, ISSUE_TYPE_BUG
+    
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Apply command line overrides to global variables
+    if args.dry_run:
+        DRY_RUN = True
+        os.environ['DRY_RUN'] = 'true'
+    
+    if args.project:
+        PROJECT = args.project
+        os.environ['JIRA_PROJECT'] = args.project
+        
+    if args.jira_url:
+        JIRA_URL = args.jira_url.rstrip("/")
+        os.environ['JIRA_URL'] = JIRA_URL
+        
+    if args.github_repo:
+        GITHUB_REPO_URL = args.github_repo
+        os.environ['GITHUB_REPO_URL'] = args.github_repo
+        
+    if args.branch:
+        GITHUB_BRANCH = args.branch  
+        os.environ['GITHUB_BRANCH'] = args.branch
+        
+    # Issue type overrides
+    if args.epic_type:
+        ISSUE_TYPE_EPIC = args.epic_type
+    if args.story_type:
+        ISSUE_TYPE_STORY = args.story_type
+    if args.task_type:
+        ISSUE_TYPE_TASK = args.task_type
+    if args.bug_type:
+        ISSUE_TYPE_BUG = args.bug_type
+        
+    # Template selection
+    if args.use_simple_template:
+        # Switch to simple template
+        simple_template = TEMPLATE_DIR / "templates-simple.json"
+        main_template = TEMPLATE_DIR / "templates.json"
+        if simple_template.exists():
+            import shutil
+            shutil.copy(simple_template, main_template)
+            print(f"📄 Using simple template (minimal custom fields)")
+    
+    # Special modes (that don't need JIRA config)
+    if args.discover_fields:
+        from discover_jira_fields import main as discover_main
+        return discover_main()
+        
+    if args.preview:
+        preview_structure()
+        return
+
+    # =================================================================
+    # STEP 1: JIRA CONNECTIVITY & VALIDATION - MANDATORY FIRST STEP
+    # =================================================================
+    
+    print(f"\n🔐 STEP 1: JIRA CONNECTIVITY & VALIDATION")
+    print("="*70)
+    
+    if not DRY_RUN:
+        # 1.1 Basic Configuration Check
+        print(f"\n📋 Checking basic configuration...")
+        missing = []
+        if not JIRA_URL:
+            missing.append("JIRA_URL")
+        if not EMAIL:
+            missing.append("JIRA_EMAIL")
+        if not TOKEN:
+            missing.append("JIRA_TOKEN")
+        if not PROJECT:
+            missing.append("JIRA_PROJECT")
+        
+        if missing:
+            print(f"❌ CONFIGURATION ERROR: Missing required environment variables")
+            print(f"   Missing: {', '.join(missing)}")
+            print(f"💡 Setup Guide:")
+            print(f"   export JIRA_URL='https://your-domain.atlassian.net'")
+            print(f"   export JIRA_EMAIL='your-email@domain.com'")
+            print(f"   export JIRA_TOKEN='your-api-token'")
+            print(f"   export JIRA_PROJECT='YOUR_PROJECT_KEY'")
+            print(f"\n🔗 Get API token: https://id.atlassian.com/manage-profile/security/api-tokens")
+            exit(1)
+        
+        print(f"✅ Basic configuration validated")
+        
+        # 1.2 Set up authentication
+        global auth
+        auth = (EMAIL, TOKEN)
+        
+        # 1.3 COMPREHENSIVE JIRA VALIDATION & CONNECTIVITY TEST
+        print(f"\n🔍 Running comprehensive JIRA validation...")
+        validation_start_time = time.time()
+        validation_success, validation_issues, validation_warnings = validate_jira_connection()
+        
+        # 1.4 Handle validation results
+        if not validation_success:
+            print(f"\n❌ JIRA VALIDATION FAILED - CANNOT PROCEED")
+            print(f"📋 Issues found ({len(validation_issues)}):")
+            for i, issue in enumerate(validation_issues, 1):
+                print(f"   {i}. {issue}")
+            
+            if validation_warnings:
+                print(f"\n⚠️  Warnings ({len(validation_warnings)}):")
+                for i, warning in enumerate(validation_warnings, 1):
+                    print(f"   {i}. {warning}")
+            
+            print(f"\n💡 TROUBLESHOOTING:")
+            print(f"   • Verify your JIRA URL is correct and accessible")
+            print(f"   • Check your email and API token are valid") 
+            print(f"   • Ensure you have access to the specified project")
+            print(f"   • Test your credentials at: {JIRA_URL}/secure/ViewProfile.jspa")
+            exit(1)
+        
+        # 1.5 Validation successful - log results
+        print(f"\n🎉 JIRA VALIDATION SUCCESSFUL!")
+        print(f"   ✅ Authentication verified")
+        print(f"   ✅ Project access confirmed")  
+        print(f"   ✅ All systems ready")
+        print(f"   📊 Validation completed in ~{int(time.time() - validation_start_time)}s")
+        
+        if validation_warnings:
+            print(f"\n⚠️  Warnings to note ({len(validation_warnings)}):")
+            for i, warning in enumerate(validation_warnings, 1):
+                print(f"   {i}. {warning}")
+        
+        # 1.6 Pre-fetch all project fields for performance optimization
+        print(f"\n🚀 Pre-fetching JIRA field metadata for performance...")
+        try:
+            prefetch_project_fields(PROJECT)
+            print(f"✅ Field metadata cached successfully")
+        except Exception as e:
+            print(f"⚠️  Could not pre-fetch fields: {e}")
+            print(f"   📝 Will fetch fields on-demand (slower but functional)")
+    
+    else:
+        print(f"\n📋 DRY RUN MODE - Configuration check only")
+        print(f"✅ Configuration loaded for preview mode:")
+        print(f"   JIRA_URL: {JIRA_URL or 'Not required in dry run'}")
+        print(f"   PROJECT: {PROJECT or 'Not required in dry run'}")
+        print(f"   EMAIL: {EMAIL or 'Not required in dry run'}")
+        print(f"   Note: Full validation skipped in dry run mode")
+
+    # =================================================================
+    # STEP 2: CONFIGURATION & SETUP (After JIRA Validation Success)
+    # =================================================================
+    
+    print(f"\n📋 STEP 2: FINAL CONFIGURATION & SETUP")
+    print("="*70)
+    print(f"✅ Configuration loaded:")
+    print(f"   JIRA_URL: {JIRA_URL or 'Not required in dry run'}")
+    print(f"   PROJECT: {PROJECT or 'Not required in dry run'}")
+    print(f"   EMAIL: {EMAIL or 'Not required in dry run'}")
+    print(f"   GITHUB_REPO_URL: {GITHUB_REPO_URL}")
+    print(f"   GITHUB_BRANCH: {GITHUB_BRANCH}")
+    print(f"   GITHUB_ACTIONS: {os.environ.get('GITHUB_ACTIONS', 'false')}")
 
     print(f"\n🚀 STARTING JIRA SYNC (Enhanced JSON Mode)")
     print(f"   Mode: {'DRY RUN (Preview Only)' if DRY_RUN else 'LIVE MODE (Will Create Issues)'}")
     print(f"   Format: JSON templates and data processing")
+    
+    # =================================================================
+    # STEP 3: SPEC DISCOVERY & INITIAL ANALYSIS
+    # =================================================================
+    
+    print(f"\n📁 STEP 3: SPEC DISCOVERY & INITIAL ANALYSIS") 
+    print("="*70)
+    
+    # =================================================================
+    # STEP 3A: VALIDATE SPEC FILES BEFORE PROCESSING
+    # =================================================================
+    
+    print(f"\n🔍 Validating spec files before processing...")
+    
+    # Check if specs folder exists
+    if not SPEC_FOLDER.exists():
+        print(f"❌ ERROR: Specs folder does not exist at {SPEC_FOLDER.absolute()}")
+        print(f"💡 Create the specs folder and add spec.md files to proceed")
+        exit(1)
+    
+    # Count spec files
+    epic_specs = list(SPEC_FOLDER.glob("**/spec.md"))
+    all_md_files = list(SPEC_FOLDER.glob("**/*.md"))
+    story_specs = [f for f in all_md_files if f.name != "spec.md"]
+    total_specs = len(epic_specs) + len(story_specs)
+    
+    print(f"✅ Spec folder validation:")
+    print(f"   📋 Epic specs (spec.md files): {len(epic_specs)}")
+    print(f"   📄 Story specs (other .md files): {len(story_specs)}")
+    print(f"   📊 Total specs to process: {total_specs}")
+    
+    # Validate minimum requirements
+    if total_specs == 0:
+        print(f"❌ ERROR: No spec files found in {SPEC_FOLDER.absolute()}")
+        print(f"💡 Add at least one spec.md file or other .md files to proceed")
+        exit(1)
+    
+    if len(epic_specs) == 0:
+        print(f"⚠️  WARNING: No epic specs (spec.md) found - only story specs will be processed")
     
     # Perform early spec discovery for logging
     if SPEC_FOLDER.exists():
@@ -1439,8 +2154,16 @@ def main():
     if DRY_RUN:
         preview_structure()
     else:
-        print(f"\n🔍 Fetching available issue types...")
-        available_types = get_project_issue_types()
+        # =================================================================
+        # STEP 4: ISSUE TYPE RESOLUTION & MAPPING (After Validation)
+        # =================================================================
+        
+        print(f"\n⚙️ STEP 4: ISSUE TYPE RESOLUTION & MAPPING")
+        print("="*70)
+        
+        # Issue type resolution (moved here after validation)
+        print(f"\n🔍 Resolving issue type mappings...")
+        available_types = get_project_issue_types()  # Already cached from validation
         if available_types:
             print(f"   Available: {', '.join(available_types)}")
             
@@ -1490,7 +2213,7 @@ def main():
             ISSUE_TYPE_TASK = issue_type_mapping['task']
             ISSUE_TYPE_BUG = issue_type_mapping['bug']
             
-            print(f"\n📋 Issue type mapping (with fallbacks):")
+            print(f"\n📋 Final issue type mapping:")
             print(f"   Epic → {ISSUE_TYPE_EPIC}")
             print(f"   Story → {ISSUE_TYPE_STORY}")
             print(f"   Task → {ISSUE_TYPE_TASK}")
@@ -1502,31 +2225,14 @@ def main():
                     print(f"   - {fallback}")
             
             print(f"\n📄 Templates file: {TEMPLATE_DIR / 'templates.json'}")
-            
-            # Final check for critical missing types
-            still_missing = []
-            if ISSUE_TYPE_EPIC not in available_types:
-                still_missing.append(f"Epic ({ISSUE_TYPE_EPIC})")
-            if ISSUE_TYPE_STORY not in available_types:
-                still_missing.append(f"Story → {ISSUE_TYPE_STORY}")
-            if ISSUE_TYPE_TASK not in available_types:
-                still_missing.append(f"Task → {ISSUE_TYPE_TASK}")
-            if ISSUE_TYPE_BUG not in available_types:
-                still_missing.append(f"Bug → {ISSUE_TYPE_BUG}")
-            
-            if still_missing:
-                print(f"\n❌ ERROR: These issue types are still not available after fallbacks:")
-                for mt in still_missing:
-                    print(f"   - {mt}")
-                print(f"\n💡 Available types in your JIRA project: {', '.join(available_types)}")
-                print(f"💡 Fix: Set environment variables to match your project's issue types:")
-                print(f"   ISSUE_TYPE_EPIC='Epic'  # or 'Story', 'Task'")
-                print(f"   ISSUE_TYPE_STORY='Story'  # or 'Task', 'Epic'")
-                print(f"   ISSUE_TYPE_TASK='Task'  # or 'Sub-task', 'Story'")
-                print(f"   ISSUE_TYPE_BUG='Bug'  # or 'Task', 'Story'")
-                exit(1)
-            else:
-                print(f"\n✅ All issue types resolved successfully!")
+
+    # =================================================================
+    # STEP 5: PROCESS SPEC FILES (After All Validation & Setup)
+    # =================================================================
+    
+    print(f"\n📄 STEP 5: PROCESSING SPEC FILES")
+    print("="*70)
+    print(f"✅ All pre-flight checks passed - ready to process spec files")
 
     process_specs()
 

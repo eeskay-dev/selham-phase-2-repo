@@ -1,5 +1,16 @@
 #!/bin/bash
 
+# Export all environment variables in one go
+export GITHUB_ACTIONS=true
+export GITHUB_SERVER_URL="https://github.com"
+export GITHUB_REPOSITORY="selham/selham-phase-2-repo"
+export GITHUB_REF_NAME="json-jira-formatting"
+export DRY_RUN=false
+export JIRA_URL="https://selham.atlassian.net"
+export JIRA_EMAIL="eesaky@zohomail.in"
+export JIRA_TOKEN="ATATT3xFfGF0MlVYo7gHvDOUeEg4JYS15TRveYPlQJ9HlrMagQmHYhijpzIk5DDpDZg4WyIBl3SqeKfTv8WThovllI8Qfra6q9I1rhNl1qDIlLJ9fLrmJuWbNEbr5PMcDukBdRTozOpYgWy55IJhfmEBKpOFvqMCCyQ22LkRCFP_Apfdw44B7zc=0BF9FD64"
+export JIRA_PROJECT="SMM"
+
 # Test script for the improved JIRA sync
 
 echo "🧪 Testing JIRA Sync Script Improvements"
@@ -8,15 +19,6 @@ echo "========================================"
 # Test 1: Simulate GitHub Actions environment
 echo ""
 echo "🔄 Test 1: GitHub Actions Environment Simulation"
-export GITHUB_ACTIONS=true
-export GITHUB_SERVER_URL="https://github.com"
-export GITHUB_REPOSITORY="selham/selham-phase-1-repo"
-export GITHUB_REF_NAME="json-jira-formatting"
-export DRY_RUN=false
-export JIRA_URL="https://selham.atlassian.net"
-export JIRA_EMAIL="eesaky@zohomail.in"
-export JIRA_TOKEN="ATATT3xFfGF0MlVYo7gHvDOUeEg4JYS15TRveYPlQJ9HlrMagQmHYhijpzIk5DDpDZg4WyIBl3SqeKfTv8WThovllI8Qfra6q9I1rhNl1qDIlLJ9fLrmJuWbNEbr5PMcDukBdRTozOpYgWy55IJhfmEBKpOFvqMCCyQ22LkRCFP_Apfdw44B7zc=0BF9FD64"
-export JIRA_PROJECT="SMM"
 
 echo "📋 GitHub Actions Configuration:"
 echo "  GITHUB_ACTIONS: $GITHUB_ACTIONS"

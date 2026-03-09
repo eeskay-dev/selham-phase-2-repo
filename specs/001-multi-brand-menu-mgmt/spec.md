@@ -1,9 +1,91 @@
-# Feature Specification: Multi-Brand Menu Management System
+# Epic Specification: Multi-Brand Menu Management System
 
 **Feature Branch**: `001-multi-brand-menu-mgmt`  
 **Created**: 2026-03-06  
-**Status**: Draft  
+**Updated**: 2026-03-09  
+**Status**: Epic - Split into Component Features  
 **Input**: User description: "Multi-Brand Menu Management: The platform shall allow administrators to onboard and manage multiple restaurant brands. For each brand, the platform shall support: Uploading and managing menu items with names, descriptions, prices, images, and nutritional and allergens information (if required). Defining and managing modifiers and customization options (e.g., toppings, sizes, add-ons) with associated prices. Setting item availability (e.g., temporary unavailability, time-based availability). Managing promotional items and discounts. The platform shall ensure clear visual separation and branding for each restaurant's menu within the user interface. Real-time updates to menus shall be reflected across all deployed platforms (kiosks, web, mobile)."
+
+## Epic Overview
+
+This epic encompasses a complete multi-brand menu management system broken into 6 focused feature specifications. Each component specification can be developed, tested, and deployed independently while contributing to the overall system functionality.
+
+## Component Feature Specifications
+
+### [002-brand-onboarding](../002-brand-onboarding/spec.md) - Restaurant Brand Onboarding
+**Priority: P1 - Foundation**
+- Platform administrator brand creation and management
+- Brand identity configuration (colors, logos, branding)
+- Multi-tenant data isolation and security
+
+### [003-menu-item-mgmt](../003-menu-item-mgmt/spec.md) - Menu Item Management  
+**Priority: P1 - Core Content**
+- Basic menu item creation (name, description, price)
+- Image upload and management
+- Nutritional information and allergen warnings
+
+### [004-menu-modifiers](../004-menu-modifiers/spec.md) - Menu Modifiers and Customizations
+**Priority: P1 - Ordering Flexibility**
+- Modifier groups creation (sizes, toppings, add-ons)
+- Individual modifier pricing and rules
+- Selection constraints and validation
+
+### [005-availability-mgmt](../005-availability-mgmt/spec.md) - Menu Item Availability Management
+**Priority: P2 - Operations**
+- Manual availability controls
+- Time-based availability scheduling
+- Inventory-based availability (optional)
+
+### [006-promotional-mgmt](../006-promotional-mgmt/spec.md) - Promotional and Discount Management
+**Priority: P3 - Marketing**
+- Promotional pricing with date ranges
+- Percentage and fixed-amount discounts
+- Campaign performance tracking
+
+### [007-realtime-sync](../007-realtime-sync/spec.md) - Real-time Multi-Platform Synchronization
+**Priority: P1 - Critical Infrastructure**
+- Menu data synchronization across platforms
+- Conflict resolution and data integrity
+- Performance under load
+
+## Implementation Sequence
+
+### Phase 1: Foundation (P1 Features)
+1. **002-brand-onboarding** - Establish multi-tenant architecture
+2. **003-menu-item-mgmt** - Enable basic menu content creation
+3. **007-realtime-sync** - Ensure platform consistency
+4. **004-menu-modifiers** - Add ordering flexibility
+
+### Phase 2: Operations (P2 Features)  
+5. **005-availability-mgmt** - Add operational controls
+
+### Phase 3: Marketing (P3 Features)
+6. **006-promotional-mgmt** - Enable promotional capabilities
+
+## Success Criteria *(Epic Level)*
+
+### Integrated System Outcomes
+
+- **ESC-001**: Complete restaurant brand onboarding and menu setup within 60 minutes
+- **ESC-002**: Menu changes propagate across all platforms within 30 seconds consistently
+- **ESC-003**: System supports 50+ restaurant brands with 100+ menu items each without degradation
+- **ESC-004**: Zero data leakage between brands across all operations and features
+- **ESC-005**: 95% customer order completion rate with proper modifier and availability handling
+
+## Dependencies and Integration Points
+
+- **Brand → Menu Items**: Brands must exist before menu items can be created
+- **Menu Items → Modifiers**: Items must exist before modifiers can be assigned
+- **Menu Items → Availability**: Items must exist before availability can be managed  
+- **Menu Items → Promotions**: Items must exist before promotions can be applied
+- **All Features → Sync**: All data changes must flow through synchronization system
+
+## Assumptions *(Epic Level)*
+
+- Multi-tenant architecture supports complete brand isolation
+- Real-time synchronization is achievable with acceptable performance
+- Restaurant operations benefit from integrated menu management functionality
+- Platform infrastructure can handle multiple brands with complex menu structures
 
 ## User Scenarios & Testing *(mandatory)*
 
