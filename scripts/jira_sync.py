@@ -4,6 +4,7 @@ import json
 import tempfile
 import shutil
 import copy
+import argparse
 from pathlib import Path
 
 # ---------------------------------------
@@ -63,32 +64,10 @@ ISSUE_TYPE_BUG = os.environ.get("ISSUE_TYPE_BUG", "Bug")
 
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 
-# Validate configuration
-if not DRY_RUN:
-    missing = []
-    if not JIRA_URL:
-        missing.append("JIRA_URL")
-    if not EMAIL:
-        missing.append("JIRA_EMAIL")
-    if not TOKEN:
-        missing.append("JIRA_TOKEN")
-    if not PROJECT:
-        missing.append("JIRA_PROJECT")
-    
-    if missing:
-        print(f"❌ ERROR: Missing required environment variables: {', '.join(missing)}")
-        print(f"💡 JIRA_URL should be like: https://your-domain.atlassian.net")
-        exit(1)
-    
-    print(f"✅ Configuration loaded:")
-    print(f"   JIRA_URL: {JIRA_URL}")
-    print(f"   PROJECT: {PROJECT}")
-    print(f"   EMAIL: {EMAIL}")
-    print(f"   GITHUB_REPO_URL: {GITHUB_REPO_URL}")
-    print(f"   GITHUB_BRANCH: {GITHUB_BRANCH}")
-    print(f"   GITHUB_ACTIONS: {os.environ.get('GITHUB_ACTIONS', 'false')}")
-
-auth = (EMAIL, TOKEN)
+# Validate configuration (moved to main() function)
+auth = None
+if not DRY_RUN and os.environ.get('JIRA_URL'):
+    auth = (EMAIL, TOKEN)
 
 # Determine the repository root directory
 SCRIPT_DIR = Path(__file__).parent
@@ -117,6 +96,7 @@ else:
 _template_cache = {}
 _issue_type_mapping = None
 _field_mapping_cache = None
+_available_fields_cache = {}
 
 # Enhanced JSON-based JIRA field mapping
 def get_field_mappings():
@@ -135,21 +115,30 @@ def get_field_mappings():
     return _field_mapping_cache
 
 def get_available_fields(project_key, issue_type_name):
-    """Get available fields for a specific project and issue type"""
+    """Get available fields for a specific project and issue type (cached)"""
+    cache_key = f"{project_key}:{issue_type_name}"
+    
+    if cache_key in _available_fields_cache:
+        return _available_fields_cache[cache_key]
+    
     url = f"{JIRA_URL}/rest/api/3/issue/createmeta?projectKeys={project_key}&issuetypeNames={issue_type_name}&expand=projects.issuetypes.fields"
     
     try:
-        response = requests.get(url, auth=auth, headers={"Content-Type": "application/json"})
+        response = requests.get(url, auth=auth, headers={"Content-Type": "application/json"}, timeout=10)
         if response.ok:
             data = response.json()
             if data.get("projects") and len(data["projects"]) > 0:
                 project = data["projects"][0]
                 if project.get("issuetypes") and len(project["issuetypes"]) > 0:
                     issue_type = project["issuetypes"][0]
-                    return list(issue_type.get("fields", {}).keys())
+                    fields = list(issue_type.get("fields", {}).keys())
+                    _available_fields_cache[cache_key] = fields
+                    print(f"     📋 Cached {len(fields)} fields for {issue_type_name}")
+                    return fields
     except Exception as e:
-        print(f"⚠️  Warning: Could not fetch available fields: {e}")
+        print(f"     ⚠️  Warning: Could not fetch available fields for {issue_type_name}: {e}")
     
+    _available_fields_cache[cache_key] = []
     return []
 
 def validate_custom_fields(json_data, available_fields=None):
@@ -984,9 +973,10 @@ def create_issue_from_json(json_file_path, json_data):
         print("---------------")
         return {"key": "DRYRUN"}
 
-    # Get available fields for this project and issue type to validate custom fields
+    # Get available fields for this project and issue type (cached)
     available_fields = get_available_fields(PROJECT, issue_type)
-    print(f"     🔍 Available fields fetched: {len(available_fields)} fields")
+    if len(available_fields) == 0:
+        print(f"     ⚠️  No fields available for {issue_type}")
 
     # Convert JSON description to ADF with GitHub link
     adf_description = json_to_adf_description(json_data)
@@ -1414,13 +1404,145 @@ def preview_structure():
     print("="*50)
 
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="Enhanced JIRA Sync - Convert markdown specs to JIRA issues with JSON templates",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  python3 jira_sync.py --dry-run                    # Preview what will be created
+  python3 jira_sync.py --preview                    # Show structure preview only  
+  python3 jira_sync.py --discover-fields            # Discover available JIRA fields
+  python3 jira_sync.py --project TEST --dry-run     # Test with specific project
+  python3 jira_sync.py --github-repo https://github.com/my/repo --branch main
+
+Environment Variables:
+  JIRA_URL, JIRA_EMAIL, JIRA_TOKEN, JIRA_PROJECT (required for live mode)
+  GITHUB_REPO_URL, GITHUB_BRANCH (optional, auto-detected in GitHub Actions)
+  ISSUE_TYPE_EPIC, ISSUE_TYPE_STORY, ISSUE_TYPE_TASK, ISSUE_TYPE_BUG (optional)
+        """)
+    
+    parser.add_argument("--dry-run", "-d", action="store_true", 
+                       help="Preview mode - don't create actual JIRA issues")
+    parser.add_argument("--preview", "-p", action="store_true",
+                       help="Show structure preview only (faster than dry-run)")
+    parser.add_argument("--discover-fields", action="store_true",
+                       help="Discover available JIRA fields and exit")
+    
+    # Override environment variables
+    parser.add_argument("--project", help="JIRA project key (overrides JIRA_PROJECT)")
+    parser.add_argument("--jira-url", help="JIRA URL (overrides JIRA_URL)")
+    parser.add_argument("--github-repo", help="GitHub repository URL (overrides GITHUB_REPO_URL)")
+    parser.add_argument("--branch", help="GitHub branch (overrides GITHUB_BRANCH)")
+    
+    # Template options
+    parser.add_argument("--template", help="Template file to use (default: templates.json)")
+    parser.add_argument("--use-simple-template", action="store_true", 
+                       help="Use simple template (minimal custom fields)")
+    
+    # Issue type overrides
+    parser.add_argument("--epic-type", help="Issue type for epics (default: Epic)")
+    parser.add_argument("--story-type", help="Issue type for stories (default: Story)")
+    parser.add_argument("--task-type", help="Issue type for tasks (default: Task)")
+    parser.add_argument("--bug-type", help="Issue type for bugs (default: Bug)")
+    
+    # Performance options
+    parser.add_argument("--timeout", type=int, default=30, help="API timeout in seconds (default: 30)")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    
+    return parser.parse_args()
+
+
 # ---------------------------------------
 # Main
 # ---------------------------------------
 
 def main():
     # Declare global variables at the start of function
-    global ISSUE_TYPE_STORY, ISSUE_TYPE_TASK, ISSUE_TYPE_BUG
+    global DRY_RUN, JIRA_URL, PROJECT, GITHUB_REPO_URL, GITHUB_BRANCH
+    global ISSUE_TYPE_EPIC, ISSUE_TYPE_STORY, ISSUE_TYPE_TASK, ISSUE_TYPE_BUG
+    
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Apply command line overrides to global variables
+    if args.dry_run:
+        DRY_RUN = True
+        os.environ['DRY_RUN'] = 'true'
+    
+    if args.project:
+        PROJECT = args.project
+        os.environ['JIRA_PROJECT'] = args.project
+        
+    if args.jira_url:
+        JIRA_URL = args.jira_url.rstrip("/")
+        os.environ['JIRA_URL'] = JIRA_URL
+        
+    if args.github_repo:
+        GITHUB_REPO_URL = args.github_repo
+        os.environ['GITHUB_REPO_URL'] = args.github_repo
+        
+    if args.branch:
+        GITHUB_BRANCH = args.branch  
+        os.environ['GITHUB_BRANCH'] = args.branch
+        
+    # Issue type overrides
+    if args.epic_type:
+        ISSUE_TYPE_EPIC = args.epic_type
+    if args.story_type:
+        ISSUE_TYPE_STORY = args.story_type
+    if args.task_type:
+        ISSUE_TYPE_TASK = args.task_type
+    if args.bug_type:
+        ISSUE_TYPE_BUG = args.bug_type
+        
+    # Template selection
+    if args.use_simple_template:
+        # Switch to simple template
+        simple_template = TEMPLATE_DIR / "templates-simple.json"
+        main_template = TEMPLATE_DIR / "templates.json"
+        if simple_template.exists():
+            import shutil
+            shutil.copy(simple_template, main_template)
+            print(f"📄 Using simple template (minimal custom fields)")
+    
+    # Special modes (that don't need JIRA config)
+    if args.discover_fields:
+        from discover_jira_fields import main as discover_main
+        return discover_main()
+        
+    if args.preview:
+        preview_structure()
+        return
+
+    # Validate JIRA configuration for non-preview modes
+    if not DRY_RUN:
+        missing = []
+        if not JIRA_URL:
+            missing.append("JIRA_URL")
+        if not EMAIL:
+            missing.append("JIRA_EMAIL")
+        if not TOKEN:
+            missing.append("JIRA_TOKEN")
+        if not PROJECT:
+            missing.append("JIRA_PROJECT")
+        
+        if missing:
+            print(f"❌ ERROR: Missing required environment variables: {', '.join(missing)}")
+            print(f"💡 JIRA_URL should be like: https://your-domain.atlassian.net")
+            exit(1)
+        
+        print(f"✅ Configuration loaded:")
+        print(f"   JIRA_URL: {JIRA_URL}")
+        print(f"   PROJECT: {PROJECT}")
+        print(f"   EMAIL: {EMAIL}")
+        print(f"   GITHUB_REPO_URL: {GITHUB_REPO_URL}")
+        print(f"   GITHUB_BRANCH: {GITHUB_BRANCH}")
+        print(f"   GITHUB_ACTIONS: {os.environ.get('GITHUB_ACTIONS', 'false')}")
+        
+        # Set up authentication
+        global auth
+        auth = (EMAIL, TOKEN)
 
     print(f"\n🚀 STARTING JIRA SYNC (Enhanced JSON Mode)")
     print(f"   Mode: {'DRY RUN (Preview Only)' if DRY_RUN else 'LIVE MODE (Will Create Issues)'}")
